@@ -16,8 +16,28 @@ Echo does **not** implement that product. It reuses the domain code of
 [magpie](https://usemagpie.ai), the reference implementation, and replaces
 only the desktop shell with [MyGo](https://mygo.egoist.dev/).
 
+**Branding: the product's name is `Echo`, always.** Every user-visible
+name uses it: the app and its executable, the bundle identifier, window
+and menu titles, notifications, installer and package metadata, the
+gateway's product strings, and the module path. Do not carry over
+`magpie` branding into anything a user can see, and do not invent
+alternate names, suffixes or codenames. Where the fork still contains
+magpie identifiers internally, rename them as the surrounding code is
+touched rather than in one sweeping pass.
+
 **Status: nothing is built yet.** This repository currently holds only
 `docs/`. There is no Go module, no module path and no shell code.
+
+## Repository
+
+- **Remote: <https://github.com/aohun/Echo.git>** (`origin`). This is the
+  only canonical remote. Do not push to, or read from, `EchoHub` or any
+  other similarly named repository — it is a separate, unrelated project.
+- The remote was empty when the local repository was created, so the local
+  `master` branch is the source of truth until the first push.
+- `/Users/wayne/Desktop/git/magpie` is a **read-only reference**. Never
+  commit to it, never push from it, and never treat its `echohub` remote
+  as Echo's.
 
 ## The two things to understand first
 
