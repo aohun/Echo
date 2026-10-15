@@ -1,10 +1,20 @@
 # macOS
 .DS_Store
 
-# Go / MyGo build output
-/build/
+# magpie's build outputs (note: build/ itself is tracked source, do not ignore it)
+/magpie
+/magpie.exe
+/magpie.app/
 /dist/
-*.exe
+/magpie-dev
+/rsrc_windows_*.syso
+/magpie-dev-backend
+/magpie-dev.new
+
+# Echo / MyGo
+/mygo-dev
+# mygo build output directory, as configured in mygo.config.ts
+/build-echo/
 *.test
 *.out
 
