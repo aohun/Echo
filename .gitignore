@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Go / MyGo build output
+/build/
+/dist/
+*.exe
+*.test
+*.out
+
+# Node (frontend tooling)
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+
+# Editors
+.idea/
+.vscode/
