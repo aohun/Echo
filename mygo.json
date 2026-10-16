@@ -1,0 +1,8 @@
+{
+  "name": "Echo",
+  "identifier": "ai.echo.app",
+  "version": "0.1.0",
+  "main": "./cmd/echo",
+  "out": "build-echo",
+  "urlSchemes": ["echo"]
+}

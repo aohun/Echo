@@ -13,7 +13,8 @@
 
 # Echo / MyGo
 /mygo-dev
-# mygo build output directory, as configured in mygo.config.ts
+# the shell binary `make echo` writes, and mygo build output
+/echo
 /build-echo/
 *.test
 *.out

@@ -32,10 +32,35 @@ ifeq ($(shell go env GOOS),android)
   TAGS = nogui
 endif
 
-.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux clean dev dev-once
+.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux clean dev dev-once echo probe
 
 build:
 	go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o magpie .
+
+# echo is the MyGo shell (cmd/echo). It is built with -tags nogui, because
+# magpie's internal/gui only compiles without Wails under that tag, and under
+# it magpie's own GUI entry point is absent — which is what the shell replaces.
+echo:
+	go build -tags nogui -o echo ./cmd/echo
+
+# probe is the shell's acceptance check: it starts the shell, walks magpie's
+# eight views in the real window, and reports what each rendered. It runs under
+# a home of its own, with failing stand-ins for the agent CLIs on PATH, so it
+# never reads a real agent config (~/.codex, ~/.claude, ~/.config/magpie) —
+# the rule magpie's own tests follow. macOS only: it needs a desktop session.
+PROBE_HOME ?= /tmp/echo-probe-home
+PROBE_TOOLS = claude codex opencode gemini cursor-agent
+probe:
+	rm -rf "$(PROBE_HOME)"
+	mkdir -p "$(PROBE_HOME)/bin" "$(PROBE_HOME)/.config" "$(PROBE_HOME)/.cache" \
+	         "$(PROBE_HOME)/.local/share" "$(PROBE_HOME)/.local/state"
+	for t in $(PROBE_TOOLS); do printf '#!/bin/sh\nexit 1\n' > "$(PROBE_HOME)/bin/$$t"; chmod +x "$(PROBE_HOME)/bin/$$t"; done
+	go build -tags nogui -o "$(PROBE_HOME)/echoprobe" ./cmd/echoprobe
+	env -i HOME="$(PROBE_HOME)" USERPROFILE="$(PROBE_HOME)" \
+	       XDG_CONFIG_HOME="$(PROBE_HOME)/.config" XDG_CACHE_HOME="$(PROBE_HOME)/.cache" \
+	       XDG_DATA_HOME="$(PROBE_HOME)/.local/share" XDG_STATE_HOME="$(PROBE_HOME)/.local/state" \
+	       PATH="$(PROBE_HOME)/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+	       "$(PROBE_HOME)/echoprobe" -out "$(PROBE_HOME)/report.json"
 
 cli:
 	CGO_ENABLED=0 go build -tags nogui -trimpath -ldflags="$(LDFLAGS)" -o magpie .
