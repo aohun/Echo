@@ -136,9 +136,6 @@ func devListen(h http.Handler) {
 // devUI is the page served on MAGPIE_DEV_UI, nil when it isn't.
 var devUI *http.Server
 
-// devUIOn is whether this dev build serves the UI over plain HTTP.
-func devUIOn() bool { return devUI != nil }
-
 // devRole is this process's half of `make dev`: "backend", "shell", or ""
 // for the whole app in one process.
 func devRole() string { return os.Getenv("MAGPIE_DEV_ROLE") }
@@ -200,7 +197,12 @@ func (c remoteWindows) post(op string, form url.Values) string {
 func (c remoteWindows) HidePanel()           { c.do("hide", "") }
 func (c remoteWindows) ShowMain(view string) { c.do("main", view) }
 func (c remoteWindows) Quit()                { c.do("quit", "") }
-func (c remoteWindows) OpenURL(u string)     { c.do("open", u) }
+func (c remoteWindows) OpenURL(u string) error {
+	if s := c.post("open", url.Values{"arg": {u}}); s != "ok" && s != "" {
+		return fmt.Errorf("%s", s)
+	}
+	return nil
+}
 func (c remoteWindows) OpenFolder(path string) error {
 	if s := c.post("reveal", url.Values{"arg": {path}}); s != "ok" {
 		return fmt.Errorf("%s", s)
@@ -282,7 +284,12 @@ func devShell(h *host) http.Handler {
 		case "quit":
 			h.Quit()
 		case "open":
-			h.OpenURL(arg)
+			if err := h.OpenURL(arg); err != nil {
+				rw.Write([]byte(err.Error()))
+				return
+			}
+			rw.Write([]byte("ok"))
+			return
 		case "reveal":
 			if err := h.OpenFolder(arg); err != nil {
 				rw.Write([]byte(err.Error()))

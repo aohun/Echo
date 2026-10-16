@@ -17,9 +17,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,6 +67,8 @@ func (s *Server) serveQoder(w http.ResponseWriter, r *http.Request, from provide
 	if err != nil {
 		return writeError(w, from, 400, err.Error()), err.Error()
 	}
+	// the vendor's own API is told the answer's format in words
+	req = req.inSystem()
 	req.Model = model
 	ask := s.askQoder(p.Account.Agent, model, p.Account.User)
 	ctx, cancel := context.WithCancel(r.Context())
@@ -81,8 +85,9 @@ func (s *Server) serveQoder(w http.ResponseWriter, r *http.Request, from provide
 			q, tool = &copy, search.Name
 		}
 	}
-	events, status, msg := ask(ctx, q)
+	events, status, msg, wait := s.askQoderWait(p.Account.Agent, model, p.Account.User)(ctx, q)
 	if events == nil {
+		retryAfterOn(w, wait)
 		return writeError(w, from, status, msg), msg
 	}
 	if tool != "" {
@@ -113,6 +118,7 @@ func relayStatus(w http.ResponseWriter, from provider.Protocol, name string, req
 		if code < 400 || code > 599 {
 			code = 502
 		}
+		retryAfterOn(w, ev.Wait)
 		return writeError(w, from, code, ev.Text), ev.Text
 	}
 	if req.Stream {
@@ -170,10 +176,30 @@ func relayStatus(w http.ResponseWriter, from provider.Protocol, name string, req
 	return 200, ""
 }
 
+// retryAfterOn sends, with an error about to be written to w, how long
+// the vendor said to wait before asking again, when it said: the agent
+// reads it, and so does the gateway's busy handling (noteBusy).
+func retryAfterOn(w http.ResponseWriter, wait time.Duration) {
+	if wait > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))
+	}
+}
+
 // askQoder is a round for Qoder's API, on the site agent ("qoder" or
 // "qoder-cn") names.
 func (s *Server) askQoder(agent, model, user string) round {
+	ask := s.askQoderWait(agent, model, user)
 	return func(ctx context.Context, req *Request) (<-chan Event, int, string) {
+		events, status, msg, _ := ask(ctx, req)
+		return events, status, msg
+	}
+}
+
+// askQoderWait is askQoder that also says, of a failure, how long Qoder
+// said to wait before asking again (its queue's retryAfterSeconds), for
+// serveQoder to send as Retry-After.
+func (s *Server) askQoderWait(agent, model, user string) func(ctx context.Context, req *Request) (<-chan Event, int, string, time.Duration) {
+	return func(ctx context.Context, req *Request) (<-chan Event, int, string, time.Duration) {
 		cred, err := qoderAuth(ctx, agent, user)
 		if err != nil {
 			// only a sign-in that is gone asks the agent to log in again;
@@ -182,15 +208,15 @@ func (s *Server) askQoder(agent, model, user string) round {
 			if errors.Is(err, provider.ErrQoderSignIn) {
 				status = 401
 			}
-			return nil, status, "Qoder: " + err.Error()
+			return nil, status, "Qoder: " + err.Error(), 0
 		}
 		config, err := qoderModel(ctx, agent, user, model)
 		if err != nil {
-			return nil, 400, err.Error()
+			return nil, 400, err.Error(), 0
 		}
 		plain, err := qoderChatBody(req, config)
 		if err != nil {
-			return nil, 500, "Qoder: " + err.Error()
+			return nil, 500, "Qoder: " + err.Error(), 0
 		}
 		wire := qoder.EncodeRequestBody(plain)
 		ts := time.Now().Unix()
@@ -198,11 +224,11 @@ func (s *Server) askQoder(agent, model, user string) round {
 		headers, err := qoder.BuildCosyHeaders(chat, &qoder.User{UID: cred.UID, Token: cred.Token,
 			Name: cred.Name, Email: cred.Email, MachineID: cred.MachineID}, wire, ts)
 		if err != nil {
-			return nil, 500, "Qoder: " + err.Error()
+			return nil, 500, "Qoder: " + err.Error(), 0
 		}
 		hr, err := http.NewRequestWithContext(ctx, http.MethodPost, chat, strings.NewReader(wire))
 		if err != nil {
-			return nil, 500, "Qoder: " + err.Error()
+			return nil, 500, "Qoder: " + err.Error(), 0
 		}
 		for k, v := range headers {
 			hr.Header.Set(k, v)
@@ -214,45 +240,106 @@ func (s *Server) askQoder(agent, model, user string) round {
 		hr.Header.Set("X-Model-Source", config.Source)
 		res, err := s.client.Do(hr)
 		if err != nil {
-			return nil, 502, "Qoder: " + err.Error()
+			return nil, 502, "Qoder: " + err.Error(), 0
 		}
+		res = notAnAPIReply(res, "") // a web page served 200 (#1012)
 		if res.StatusCode/100 != 2 {
 			b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 			res.Body.Close()
-			status, msg := qoderFailure(res.StatusCode, b)
-			return nil, status, msg
+			status, msg, wait := qoderFailure(res.StatusCode, b)
+			return nil, status, msg, wait
 		}
 		events := make(chan Event, 32)
 		go decodeQoder(ctx, res, events, model)
-		return events, 0, ""
+		return events, 0, "", 0
 	}
 }
 
-// qoderFailure maps a bad upstream status to magpie's status and message.
-func qoderFailure(status int, body []byte) (int, string) {
+// Qoder's own error codes, read as Qoder's client reads them (the
+// QoderErrorCode table in Qoder.app's qoder-agent-sdk worker), and as the
+// plugin does (@magpie-community/opencode-qoder-auth 0.2.14): only 105
+// (loginExpired) is a lapsed sign-in there, so a 401/403 that carries
+// another code isn't one here either (plugins #98: the model's queue,
+// 10605, came as a 403 and read as "sign in again").
+const qoderQueued = "10605"
+
+var (
+	// the codes Qoder's client counts as a plan's usage or credits used up
+	qoderQuotaCodes = map[string]bool{"110": true, "112": true, "113": true, "114": true, "115": true,
+		"116": true, "117": true, "118": true, "119": true, "122": true}
+	// refusals of this request, not of the account: sensitive content,
+	// not supported, input too long, too many media, a custom model's
+	// service (Qoder's table has no 100402)
+	qoderRequestCodes = map[string]bool{"406": true, "416": true, "430": true, "80411": true, "80412": true,
+		"100400": true, "100401": true, "100403": true}
+)
+
+// qoderBusyWait is how long a queued request waits when Qoder names no time.
+const qoderBusyWait = 30 * time.Second
+
+// qoderFailure maps a bad upstream status to magpie's status and message,
+// and how long Qoder said to wait before asking again (0 when it didn't).
+// Qoder's code in the body says what the failure is, whatever the status.
+func qoderFailure(status int, body []byte) (int, string, time.Duration) {
 	if status < 400 || status > 599 {
 		status = 502
 	}
 	msg := strings.TrimSpace(string(body))
+	var code string
+	var queue gjson.Result
 	if gjson.ValidBytes(body) {
-		if m := gjson.GetBytes(body, "message").String(); m != "" {
+		code = gjson.GetBytes(body, "code").String()
+		m := gjson.GetBytes(body, "message").String()
+		if m != "" {
 			msg = m
 		}
 		// the model vendor's own reason, e.g. an effort the model refuses
 		if d := gjson.Get(gjson.GetBytes(body, "details").String(), "error.message").String(); d != "" {
 			msg += ": " + d
 		}
+		// the queue's state: a field, or the message itself as JSON
+		if q := gjson.GetBytes(body, "queue"); q.IsObject() {
+			queue = q
+		} else if q := gjson.Parse(m); strings.HasPrefix(strings.TrimSpace(m), "{") && q.IsObject() &&
+			(q.Get("isQueued").Exists() || q.Get("serviceAvailable").Exists() || q.Get("retryAfterSeconds").Exists()) {
+			queue = q
+		}
 	}
 	if msg == "" {
 		msg = http.StatusText(status)
 	}
-	switch {
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return 401, "Qoder: the sign-in lapsed — sign in again"
-	case status == http.StatusTooManyRequests || strings.Contains(strings.ToLower(msg), "quota"):
-		return 429, "usage limit reached: " + msg
+	// Qoder's queue for the model: busy for now, with when to ask again.
+	// The sign-in is fine (the same token reads the models and the usage),
+	// so it is a 503 with Retry-After, which the gateway counts as busy and
+	// asks again after, and never "sign in again"
+	if code == qoderQueued || queue.Get("isQueued").Type == gjson.True || queue.Get("serviceAvailable").Type == gjson.False {
+		wait := qoderBusyWait
+		if n := queue.Get("retryAfterSeconds").Float(); n > 0 {
+			wait = time.Duration(math.Ceil(n)) * time.Second
+		}
+		what := "is busy"
+		if queue.Get("isQueued").Type == gjson.True {
+			what = "queued the request"
+		}
+		if k := queue.Get("modelKey").String(); k != "" {
+			what += " for " + k
+		}
+		if t := queue.Get("queueType").String(); t != "" {
+			what += " (this plan's queue: " + t + ")"
+		}
+		return 503, fmt.Sprintf("Qoder %s; try again in %ds", what, int(wait/time.Second)), wait
 	}
-	return status, "Qoder: " + msg
+	switch {
+	case qoderQuotaCodes[code]:
+		return 429, "usage limit reached: " + msg, 0
+	case qoderRequestCodes[code]:
+		return 400, fmt.Sprintf("Qoder refused the request (%s): %s", code, msg), 0
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return 401, "Qoder: the sign-in lapsed — sign in again", 0
+	case status == http.StatusTooManyRequests || strings.Contains(strings.ToLower(msg), "quota"):
+		return 429, "usage limit reached: " + msg, 0
+	}
+	return status, "Qoder: " + msg, 0
 }
 
 // qoderChatBody is the plaintext JSON Qoder's agent_chat_generation takes,
@@ -475,9 +562,29 @@ func decodeQoder(ctx context.Context, res *http.Response, out chan<- Event, mode
 		return
 	}
 	a := qoderText{tool: -1}
+	// emit lifts one piece of the split text into events: a call, the text,
+	// or a call that can't be read, which ends the turn as an error so the
+	// agent can try it again (plugins#132, as the moved qoder plugin's).
+	// False when the turn ends here: the consumer went, or an error was
+	// sent — an error frame carries no finish.
+	emit := func(frag qoderFrag) bool {
+		switch {
+		case frag.err != "":
+			send(Event{Kind: KError, Status: 502, Text: frag.err})
+			return false
+		case frag.call != nil:
+			if !send(Event{Kind: KToolStart, ID: "call_" + qoder.NewID(), Name: frag.call.name}) {
+				return false
+			}
+			return send(Event{Kind: KToolArgs, Text: frag.call.args})
+		case frag.text != "":
+			return send(Event{Kind: KText, Text: frag.text})
+		}
+		return true
+	}
 	finish := func() {
 		for _, frag := range a.flush() {
-			if frag.text != "" && !send(Event{Kind: KText, Text: frag.text}) {
+			if !emit(frag) {
 				return
 			}
 		}
@@ -504,8 +611,8 @@ func decodeQoder(ctx context.Context, res *http.Response, out chan<- Event, mode
 			if len(data) == 0 {
 				data = []byte(payload)
 			}
-			code, msg := qoderFailure(int(status.Int()), data)
-			send(Event{Kind: KError, Status: code, Text: msg})
+			code, msg, wait := qoderFailure(int(status.Int()), data)
+			send(Event{Kind: KError, Status: code, Text: msg, Wait: wait})
 			return
 		}
 		if inner == "" || !json.Valid([]byte(inner)) {
@@ -519,17 +626,7 @@ func decodeQoder(ctx context.Context, res *http.Response, out chan<- Event, mode
 		}
 		if content := delta.Get("content"); content.Exists() {
 			for _, frag := range a.feed(content.String()) {
-				ev := Event{}
-				if frag.call != nil {
-					ev = Event{Kind: KToolStart, ID: "call_" + qoder.NewID(), Name: frag.call.name}
-					if !send(ev) {
-						return
-					}
-					ev = Event{Kind: KToolArgs, Text: frag.call.args}
-				} else {
-					ev = Event{Kind: KText, Text: frag.text}
-				}
-				if !send(ev) {
+				if !emit(frag) {
 					return
 				}
 			}
@@ -541,7 +638,7 @@ func decodeQoder(ctx context.Context, res *http.Response, out chan<- Event, mode
 			if idx != a.tool {
 				a.tool = idx
 				for _, frag := range a.flush() {
-					if frag.text != "" && !send(Event{Kind: KText, Text: frag.text}) {
+					if !emit(frag) {
 						return
 					}
 				}
@@ -577,20 +674,48 @@ func decodeQoder(ctx context.Context, res *http.Response, out chan<- Event, mode
 }
 
 // qoderText is the streaming tool-call splitter: it holds text until a full
-// tool-call block arrives, then emits it as a call.
+// tool-call block arrives, then emits it as a call. A block on its way to
+// being a call that can't be read, or that the stream ends inside, is an
+// error, never the answer (plugins#132, as the moved qoder plugin's 0.2.16):
+// the turn fails, so it can be tried again. A block whose JSON is whole when
+// the stream ends without its close is still the call; one that is no call
+// at all, or one inside code, stays text.
 type qoderText struct {
 	textBuf string
 	callBuf string
 	inCall  bool
 	sawTool bool
-	tool    int // index of the native tool call being assembled, -1 for none
+	sent    string // the text given out so far, to tell a block in code from a call
+	tool    int    // index of the native tool call being assembled, -1 for none
 }
 
 type qoderFrag struct {
 	text string
 	call *qoderCall
+	err  string
 }
 type qoderCall struct{ name, args string }
+
+// qoderQuoted says text ends inside a code fence or an inline code span: a
+// tool-call block there is prose about one, not a call.
+func qoderQuoted(text string) bool {
+	if strings.Count(text, "```")%2 == 1 {
+		return true
+	}
+	line := text[strings.LastIndex(text, "\n")+1:]
+	return strings.Count(strings.ReplaceAll(line, "```", ""), "`")%2 == 1
+}
+
+// qoderCallish says a block was on its way to being a call: its JSON began,
+// or the XML function form.
+func qoderCallish(v string) bool {
+	return strings.HasPrefix(strings.TrimLeft(v, " \t\r\n"), "{") || strings.Contains(v, "\x3cfunction=")
+}
+
+const (
+	qoderCallUnreadable = "Qoder: the model's tool call, written as text, can't be read; it is not sent on as the answer"
+	qoderCallCutShort   = "Qoder: the model's tool call, written as text, was cut short; it is not sent on as the answer"
+)
 
 func (a *qoderText) feed(input string) []qoderFrag {
 	var out []qoderFrag
@@ -601,6 +726,7 @@ func (a *qoderText) feed(input string) []qoderFrag {
 			i := strings.Index(comb, qoderCallOpen)
 			if i < 0 {
 				if keep := qoderSuffix(comb); keep < len(comb) {
+					a.text(comb[:len(comb)-keep])
 					out = append(out, qoderFrag{text: comb[:len(comb)-keep]})
 					a.textBuf = comb[len(comb)-keep:]
 				} else {
@@ -609,6 +735,7 @@ func (a *qoderText) feed(input string) []qoderFrag {
 				break
 			}
 			if i > 0 {
+				a.text(comb[:i])
 				out = append(out, qoderFrag{text: comb[:i]})
 			}
 			input = comb[i+len(qoderCallOpen):]
@@ -622,11 +749,16 @@ func (a *qoderText) feed(input string) []qoderFrag {
 			a.callBuf = comb
 			break
 		}
-		if c, ok := qoderParseCall(comb[:j]); ok {
+		body := comb[:j]
+		if c, ok := qoderParseCall(body); ok {
 			a.sawTool = true
 			out = append(out, qoderFrag{call: &c})
+		} else if qoderCallish(body) && !qoderQuoted(a.sent) {
+			a.inCall = false
+			return append(out, qoderFrag{err: qoderCallUnreadable})
 		} else {
-			out = append(out, qoderFrag{text: qoderCallOpen + comb[:j] + qoderCallClose})
+			a.text(qoderCallOpen + body + qoderCallClose)
+			out = append(out, qoderFrag{text: qoderCallOpen + body + qoderCallClose})
 		}
 		input = comb[j+len(qoderCallClose):]
 		a.inCall = false
@@ -634,10 +766,23 @@ func (a *qoderText) feed(input string) []qoderFrag {
 	return out
 }
 
+// text hands a piece of text out, remembering it: whether the next block is
+// inside code is told from what came before it.
+func (a *qoderText) text(t string) { a.sent += t }
+
 func (a *qoderText) flush() []qoderFrag {
 	if a.inCall {
-		t := qoderCallOpen + a.callBuf
+		body := a.callBuf
 		a.inCall, a.callBuf = false, ""
+		if qoderCallish(body) && !qoderQuoted(a.sent) {
+			if c, ok := qoderParseCall(body); ok {
+				a.sawTool = true
+				return []qoderFrag{{call: &c}}
+			}
+			return []qoderFrag{{err: qoderCallCutShort}}
+		}
+		t := qoderCallOpen + body
+		a.text(t)
 		if t != "" {
 			return []qoderFrag{{text: t}}
 		}
@@ -645,6 +790,7 @@ func (a *qoderText) flush() []qoderFrag {
 	if a.textBuf != "" {
 		t := a.textBuf
 		a.textBuf = ""
+		a.text(t)
 		return []qoderFrag{{text: t}}
 	}
 	return nil

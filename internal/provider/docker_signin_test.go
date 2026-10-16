@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,10 +14,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/yetone/magpie/internal/plugin"
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 // magpie in Docker (xugui on Discord: "docker版登不上grok和command code"):
@@ -62,6 +65,12 @@ func TestGrokInstallsWithoutShell(t *testing.T) {
 	if !ok {
 		t.Fatal("grok is installed already")
 	}
+	// The download lands in a file macOS has already let run, which the
+	// installer writes over in place and renames. A newly written one waits
+	// for the system's first-run check before its first exec, and while a
+	// go test ./... starts other new programs that wait outlasts the
+	// install's own 30s for `grok --version`. That check isn't under test.
+	testenv.Program(t, filepath.Join(home, ".grok", "downloads", fmt.Sprintf("grok-%s.tmp.%d", platform, os.Getpid())), "#!/bin/sh\n")
 	if err := installCLI(context.Background(), c); err != nil {
 		t.Fatal(err)
 	}
@@ -200,10 +209,7 @@ func TestCommandCodeSignInPastedKey(t *testing.T) {
 // bash" in Docker, where there's no shell to run it: the CLI is installed
 // first, as it is for a moved one.
 func TestGrokPluginSignInInstallsCLI(t *testing.T) {
-	bun, err := exec.LookPath("bun")
-	if err != nil {
-		t.Skip("no bun on PATH")
-	}
+	bun := testenv.Bun(t)
 	home := claudeHome(t)
 	t.Setenv("MAGPIE_BUN", bun)
 	t.Cleanup(plugin.Settle)
@@ -256,11 +262,18 @@ export const P = async () => ({
 	}
 	t.Cleanup(func() { GrokExecutable = oldExe })
 	var ran string
+	// the install waits for the test to see it under way: a fake that
+	// finished at once let the sign-in reach "waiting" before
+	// StartPluginSignIn read its own state back
+	seen := make(chan struct{})
+	release := sync.OnceFunc(func() { close(seen) })
+	t.Cleanup(release)
 	oldRun := runInstaller
 	runInstaller = func(ctx context.Context, c agentCLI) ([]byte, error) {
+		<-seen
 		ran = c.Name
 		os.MkdirAll(filepath.Dir(exe), 0o755)
-		return nil, os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755)
+		return nil, testenv.WriteProgram(exe, "#!/bin/sh\n")
 	}
 	t.Cleanup(func() { runInstaller = oldRun })
 
@@ -271,11 +284,57 @@ export const P = async () => ({
 	if st.State != "installing" || st.Installing != "Grok Build" {
 		t.Fatalf("started %+v", st)
 	}
+	release()
 	st = waitPast(t, st.ID, "installing")
 	if st.State == "waiting" {
 		st = waitPast(t, st.ID, "waiting")
 	}
 	if st.State != "done" || st.User != "me@grok" || ran != "Grok Build" {
 		t.Fatalf("finished %+v (installer %q)", st, ran)
+	}
+}
+
+// The command line's plugin sign-in (`magpie plugin login grok`) installs
+// Grok Build through InstallPluginCLI, as the window's does; it said
+// "install Grok Build first: curl … | bash" in Docker, which has no curl
+// (#2223, evier12345). Only a plugin that signs in with a vendor's CLI
+// gets one.
+func TestInstallPluginCLIInstallsGrokBuild(t *testing.T) {
+	home := claudeHome(t)
+	exe := filepath.Join(home, ".grok", "bin", "grok")
+	oldExe := GrokExecutable
+	GrokExecutable = func() string {
+		if isFile(exe) {
+			return exe
+		}
+		return ""
+	}
+	t.Cleanup(func() { GrokExecutable = oldExe })
+	var ran []string
+	oldRun := runInstaller
+	runInstaller = func(ctx context.Context, c agentCLI) ([]byte, error) {
+		ran = append(ran, c.Name)
+		os.MkdirAll(filepath.Dir(exe), 0o755)
+		return nil, testenv.WriteProgram(exe, "#!/bin/sh\n")
+	}
+	t.Cleanup(func() { runInstaller = oldRun })
+
+	if got := PluginCLIMissing("fakeco"); got != "" {
+		t.Fatalf("a plugin that runs no CLI needs %q", got)
+	}
+	if err := InstallPluginCLI(context.Background(), "fakeco"); err != nil || len(ran) != 0 {
+		t.Fatalf("a plugin that runs no CLI: %v, installed %v", err, ran)
+	}
+	if got := PluginCLIMissing("grok"); got != "Grok Build" {
+		t.Fatalf("Grok's plugin without Grok Build needs %q", got)
+	}
+	if err := InstallPluginCLI(context.Background(), "grok"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ran) != 1 || ran[0] != "Grok Build" || !isFile(exe) {
+		t.Fatalf("installed %v", ran)
+	}
+	if got := PluginCLIMissing("grok"); got != "" {
+		t.Fatalf("with Grok Build there, still missing %q", got)
 	}
 }

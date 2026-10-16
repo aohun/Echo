@@ -8,6 +8,7 @@
 package provider
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/json"
 	"errors"
@@ -19,10 +20,12 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/steady"
 )
@@ -34,7 +37,7 @@ const (
 	Chat      Protocol = "chat"      // OpenAI Chat Completions
 	Responses Protocol = "responses" // OpenAI Responses
 	Anthropic Protocol = "anthropic" // Anthropic Messages
-	Gemini    Protocol = "gemini"    // Google Gemini. Served to clients; spoken upstream only for Factory's generate route
+	Gemini    Protocol = "gemini"    // Google Gemini's generateContent: served to clients; spoken upstream at a custom provider's Gemini URL, Vertex AI and Factory's generate route
 )
 
 // Protocols in the order magpie prefers them when it has to translate.
@@ -50,6 +53,16 @@ type Provider struct {
 	Icon   string   `json:"icon,omitempty"`
 	Preset string   `json:"preset,omitempty"` // preset this was created from, if any
 	Key    string   `json:"key"`              // API key, as typed by the user
+
+	// AccessKeyID and SecretAccessKey are a Volcengine account's access
+	// key (TakesVolcAccessKey), what Ark tells its Coding or Agent Plan's
+	// windows to (volcengine_usage.go), or a Tencent Cloud account's API
+	// key, its SecretId and SecretKey (TakesTencentAccessKey), what TokenHub
+	// tells Token Plan 企业版's usage to (tencent_usage.go); not the plan's
+	// inference key in Key. They are kept, backed up and synced as the keys are: the Secret
+	// is never sent to the GUI, and a backup without keys has neither.
+	AccessKeyID     string `json:"accessKeyID,omitempty"`
+	SecretAccessKey string `json:"secretAccessKey,omitempty"`
 
 	// KeyName names the key in use, and Keys are the provider's other
 	// accounts: keys saved to switch to (see keys.go).
@@ -68,10 +81,21 @@ type Provider struct {
 	Chat      string `json:"chat,omitempty"`
 	Responses string `json:"responses,omitempty"`
 	Anthropic string `json:"anthropic,omitempty"`
+	// Gemini is the base of Google's Gemini API, or of one that answers as
+	// it does (…/v1beta): models/{model}:streamGenerateContent is asked
+	// under it, with the key in x-goog-api-key, and models under it lists
+	// them (#1346).
+	Gemini string `json:"gemini,omitempty"`
 	// Decide is the base of a decision API (TypeSafe's System One, which
 	// Jev answers), for routing groups' choices of model and effort. The
 	// provider may also serve conversations on the other endpoints.
 	Decide string `json:"decide,omitempty"`
+	// BaseAPI is the API the user gave a custom provider's Base URL as,
+	// in its editor: "chat", "responses", "anthropic", "gemini" or "decide". The
+	// editor shows that pick again, where it would otherwise show the
+	// first API with a URL (01huadalang: Responses picked and saved came
+	// back as OpenAI compatible). Requests go by which URLs are set.
+	BaseAPI string `json:"baseAPI,omitempty"`
 
 	// Fallback is where a request goes when this provider can't take it —
 	// out of quota, rate limited, overloaded or down — before any of the
@@ -102,7 +126,7 @@ type Provider struct {
 	// Affinity is how long a conversation stays with the key or account
 	// that answered it, so the vendor's prompt cache it filled is read
 	// again rather than lost (see Affinities): "" auto, "session",
-	// "turn", "off".
+	// "turn", "off", "strict".
 	Affinity string `json:"affinity,omitempty"`
 
 	// KeepLogin, on Codex's or Claude Code's subscription, keeps the agent
@@ -115,6 +139,12 @@ type Provider struct {
 	// the user uses the agent as, while the first is only the one whose
 	// allowance is spent first (#524). Empty, it is the first.
 	KeepLoginAs string `json:"keepLoginAs,omitempty"`
+	// SwitchOnly, on Codex's subscription, has magpie only move Codex's
+	// own sign-in (auth.json) to the next account with room and back:
+	// Codex's requests then go straight to OpenAI, never through the
+	// gateway for account failover, however many of its accounts are on
+	// (#1907).
+	SwitchOnly bool `json:"switchOnly,omitempty"`
 
 	// MaxConcurrency is how many requests may be out at the vendor at once
 	// on each of its keys or accounts (Discord, Lemon: a Codex account is
@@ -135,6 +165,30 @@ type Provider struct {
 	// it is turned away as having waited too long (#892). 0 waits as long
 	// as it takes.
 	QueueWait int `json:"queueWait,omitempty"`
+	// MaxRPM is how many requests a minute each of its keys or accounts
+	// sends the vendor, over a rolling 60 seconds (coeo91 on Discord:
+	// OpenRouter's free models take 20 a minute, which a limit at once
+	// can't keep to); one more waits for room (see RPMLimit). 0 is no
+	// limit.
+	MaxRPM int `json:"maxRPM,omitempty"`
+	// QuotaRest is how many minutes one of its keys sits out once the
+	// vendor says it is out of its allowance without saying when it is
+	// back (#1772: Ollama Cloud's weekly limit); 0 is the gateway's own
+	// quarter of an hour. A time the vendor names stands over it.
+	QuotaRest int `json:"quotaRest,omitempty"`
+	// QuotaResetAt is the time of day a key of it out of its allowance is
+	// back, when its vendor refuses for a day's allowance without saying
+	// when (#2008: a free tier's "today's free-model token quota"): "08:00"
+	// on this computer's clock, or "00:00+08:00" on the vendor's. Set, it
+	// stands over QuotaRest; a time the vendor names stands over both.
+	QuotaResetAt string `json:"quotaResetAt,omitempty"`
+	// RestCap is the most, in minutes, one of its keys or accounts sits
+	// out while it keeps failing or keeps being rate limited as soon as
+	// its rest is over (#2008); 0 is the gateway's own, 10 minutes for a
+	// failure and 30 for a rate limit. The vendor's own "try again in"
+	// still stands over it. RestCapOff (-1): no rest at all after a
+	// failure that says nothing of why, a rate limit's as the gateway's own.
+	RestCap int `json:"restCap,omitempty"`
 
 	// PriceRate is what the provider charges against the official price
 	// (ITea312, #819): a relay that bills 0.8× or 1.5× of it. It scales the
@@ -151,6 +205,12 @@ type Provider struct {
 	// ignore them: their auth is the agent's own.
 	Headers map[string]string `json:"headers,omitempty"`
 
+	// ExtraBody are JSON fields added to the body of every request to the
+	// vendor (#1604), filling in what the body lacks, or replacing it for a
+	// name written "!name"; ${sessionId} in a value is the conversation's
+	// id (extrabody.go). Signed-in agent accounts ignore it, as Headers.
+	ExtraBody ExtraBody `json:"extraBody,omitempty"`
+
 	// Searches says the vendor answers a web search tool offered on its
 	// Anthropic or Responses API by itself (web_search_20250305,
 	// web_search): a relay in front of Anthropic's or OpenAI's API, which
@@ -158,11 +218,66 @@ type Provider struct {
 	// it as the client sent it, rather than given magpie's search (#359).
 	Searches bool `json:"searches,omitempty"`
 
+	// CodexAsSent has a request Codex sends on the Responses API go to it
+	// as Codex sent it, its model name alone swapped: a relay that checks
+	// it is Codex's own (#1758: "Codex 客户端请求特征无效", 10014), which
+	// the shape magpie fits it to for another backend (Responses Lite's
+	// additional_tools lifted into tools, the tool search as a function,
+	// OpenAI-only fields left out) fails. Off, the default, keeps that
+	// fitting, which a backend that isn't OpenAI's needs (#350).
+	CodexAsSent bool `json:"codexAsSent,omitempty"`
+
+	// NativeCompaction has Codex's compaction_trigger go to the provider
+	// as Codex sent it, and the compaction the provider writes back go to
+	// Codex as it came (#1099), where magpie otherwise asks the model for
+	// a summary and hands Codex that (its "magpie1:" compaction). Only a
+	// provider whose wire carries it takes it (CarriesCompaction): a
+	// Responses API (Sub2API, a remote magpie), a ChatGPT account, GitHub
+	// Copilot's GPT models. Such a compaction is sealed by the key or
+	// account that wrote it, so its conversation stays there, or is
+	// refused, never sent elsewhere to be dropped. Off, the default,
+	// keeps magpie's summary.
+	NativeCompaction bool `json:"nativeCompaction,omitempty"`
+
+	// PassUserAgent has a request go to the vendor with the User-Agent the
+	// agent that sent it gave (pi, opencode, Claude Code…), in place of
+	// magpie's own (#1851): a coding plan that serves only agents it names
+	// knows them by it. One the agent didn't give, or magpie's own
+	// requests, go as magpie. Off, the default, every request goes as
+	// magpie. Only a key+URL provider takes it: a signed-in account, a
+	// plugin's and one that goes as a client of its vendor's own keep the
+	// identity their signing gives (see PassesUserAgent).
+	PassUserAgent bool `json:"passUserAgent,omitempty"`
+
 	// PinUpstream, on the Cline API, has its DeepSeek models answered only
 	// by DeepSeek's own API (White Immortal on Discord): Cline routes a
 	// model through an AI gateway that may serve it from any host, and
 	// DeepSeek's own keeps its prompt cache. See ClinePin.
 	PinUpstream bool `json:"pinUpstream,omitempty"`
+
+	// AuthHeader is which header the key goes in on a third-party
+	// Anthropic API, which is sent both x-api-key and Authorization:
+	// Bearer by default (AuthBoth). A vendor that refuses the two together
+	// (Aloha on Discord: "x-api-key 和 Authorization 不可以同时存在") is
+	// sent one, AuthXAPIKey or AuthBearer: picked in the editor, or
+	// learned from that refusal (RetryOneAuth). Anthropic's, Bedrock's and
+	// Azure's own APIs, which take x-api-key alone, ignore it.
+	AuthHeader string `json:"authHeader,omitempty"`
+
+	// Unredacted has requests to a provider on this machine or the local
+	// network (Ollama, LM Studio, a vLLM box) go as the agent wrote them,
+	// unmasked by Settings' redaction, which keeps secrets from vendors
+	// (lc on Discord). It is the user's word, not the address's: a relay
+	// run locally, or Ollama's cloud models, pass a request on to a vendor.
+	// See SkipsRedaction.
+	Unredacted bool `json:"unredacted,omitempty"`
+
+	// InsecureTLS has magpie take the certificate of the provider's own
+	// HTTPS host as it is, unchecked (#2383, fangzhengjin: a vLLM on the
+	// LAN, Ollama behind a self-signed cert). Only a provider the user
+	// added takes it (TakesInsecureTLS), and only for the hosts of its own
+	// base URLs (UncheckedHosts); see Via.
+	InsecureTLS bool `json:"insecureTLS,omitempty"`
 
 	// Proxy is the proxy magpie's requests to this provider go through
 	// (#237: Codex through one, a vendor at home without): "" follows
@@ -170,10 +285,11 @@ type Provider struct {
 	// "direct" none, anything else the proxy's address (http://, https://,
 	// socks5://; host:port means http). Signed-in accounts keep it too.
 	Proxy string `json:"proxy,omitempty"`
-	// AccountProxies is, for a subscription holding several accounts
-	// (Codex's, Claude Code's…), the proxy of each account that has one
-	// of its own, by its name in lower case, as Proxy takes one; an
-	// account not in it follows Proxy (see ProxyChoice).
+	// AccountProxies is, for a provider holding several accounts or keys
+	// (Codex's accounts, a relay's keys…), the proxy of each one that has
+	// one of its own, as Proxy takes one: an account by its name in lower
+	// case, a key by its KeyID. One not in it follows Proxy (see
+	// ProxyChoice).
 	AccountProxies map[string]string `json:"accountProxies,omitempty"`
 	// AccountModels is, for a provider holding several accounts or keys,
 	// the models each one the user narrowed serves, and no others (#474):
@@ -185,6 +301,18 @@ type Provider struct {
 	// in lower case: past it, routing takes the account for used up until
 	// the window renews (see account_caps.go). One not in it has no cap.
 	AccountCaps map[string]int `json:"accountCaps,omitempty"`
+	// AccountWindowCaps is, for a subscription, the share of each usage
+	// window an account is used to at most where the user set one for that
+	// window apart (willz on Discord), by the account's name in lower case
+	// and then the window's WindowCapID: 1–99, or 100 for none on it. A
+	// window not in it takes the account's AccountCaps.
+	AccountWindowCaps map[string]map[string]int `json:"accountWindowCaps,omitempty"`
+	// AccountNames is, for a subscription, the name the user gave each
+	// account they named (#1515: a team's seats told apart by who holds
+	// them, not by a masked email), by the account's name in lower case.
+	// It is magpie's own: the vendor's or plugin's sign-in never sees it
+	// (see account_names.go).
+	AccountNames map[string]string `json:"accountNames,omitempty"`
 
 	// BalanceURL, when set, is where the vendor tells what is left on a
 	// key, asked with the key the way a chat request carries it; BalancePath
@@ -192,6 +320,10 @@ type Provider struct {
 	// magpie knows need neither.
 	BalanceURL  string `json:"balanceURL,omitempty"`
 	BalancePath string `json:"balancePath,omitempty"`
+	// BalanceMethod is how BalanceURL is asked: "" (or GET), or POST with
+	// no body, for an endpoint that answers only a POST (#2368). Any other
+	// is refused when the balance is read (balanceMethodOf).
+	BalanceMethod string `json:"balanceMethod,omitempty"`
 	// BalanceToken is what a vendor tells the whole account's balance to,
 	// where a key is told only what is left on itself: AiHubMix's system
 	// access token, or a new-api relay's for its /api/user/self named in
@@ -203,6 +335,10 @@ type Provider struct {
 	// team's windows are told to the key only with them (see
 	// zhipuKeyTeamWindows). nil for a key of the user's own plan.
 	ZhipuTeam *ZhipuTeam `json:"zhipuTeam,omitempty"`
+	// Vertex, for a Google Vertex AI provider, is the project and location
+	// its requests go to and the Google credentials that sign them, in
+	// place of a key (see vertex.go).
+	Vertex *Vertex `json:"vertex,omitempty"`
 
 	// ModelsURL, when set, is where the vendor lists its models, for one
 	// that lists them away from the base URL requests go to (Xiaomi MiMo's
@@ -210,8 +346,26 @@ type Provider struct {
 	ModelsURL string `json:"modelsURL,omitempty"`
 
 	// Models the user chose to expose. Empty means "the preset's picks, or
-	// everything the vendor lists when that list is short".
+	// everything the vendor lists when that list is short" — unless NoModels.
 	Models []string `json:"models,omitempty"`
+	// NoModels is the user's Select none (#1818): with no Models picked,
+	// none of its models are served — not to agents, not to any routing
+	// group, not by a "provider/model" id — while its balance and usage
+	// are still read and shown. Without it, no picks is the vendor's list
+	// as ever, so a file saved before it reads as it did. A pick clears it.
+	NoModels bool `json:"noModels,omitempty"`
+	// PickedFrom are the models the vendor listed when Models were saved: one
+	// listed since is served beside picks that held every one listed then
+	// (withNewlyListed), and one listed then and left unpicked stays out.
+	PickedFrom []string `json:"pickedFrom,omitempty"`
+	// RefreshEvery, for a provider of the user's own, is how often the
+	// gateway fetches its model list by itself ("6h", "1d"; none, only when
+	// asked), as Fetch models does (#2135). See autolist.go.
+	RefreshEvery string `json:"refreshEvery,omitempty"`
+	// AutoInclude are patterns over a model's id (a glob with *, or a
+	// regular expression after "re:"): a model a fetch newly lists that one
+	// matches joins Models, beside the picks already there (#2135).
+	AutoInclude []string `json:"autoInclude,omitempty"`
 	// Unlisted keeps the provider's own models out of the list agents see:
 	// it serves only through the routing groups it is in, and by its
 	// "provider/model" ids.
@@ -271,6 +425,10 @@ type file struct {
 	// Routing page (#779), by id, found ones among them; one not in it
 	// follows those that are (see SetGroupOrder).
 	GroupOrder []string `json:"groupOrder,omitempty"`
+	// PluginLeft are the picks of a removed plugin's providers, set aside
+	// when it was removed and put back when it is added again (#2057; see
+	// plugin_left.go).
+	PluginLeft []LeftRecord `json:"pluginLeft,omitempty"`
 }
 
 // Path is the file the user's providers live in.
@@ -311,17 +469,59 @@ func read() (file, error) {
 	if err != nil {
 		return f, &unreadableError{Path(), err}
 	}
+	// An editor that saves with a byte-order mark leaves JSON that Go's
+	// decoder refuses; read as broken, the file fell back to its .bak, an
+	// older generation without what was saved since (#1821).
+	b = bytes.TrimPrefix(b, utf8BOM)
 	if err := json.Unmarshal(b, &f); err != nil {
-		return file{}, &unreadableError{Path(), err}
+		// one left all zero by a crash (#1505) is its last good generation
+		bak, ferr := lastgood.Fallback(Path(), b, validProviders)
+		if ferr != nil {
+			return file{}, &unreadableError{Path(), err}
+		}
+		f = file{}
+		if err := json.Unmarshal(bak, &f); err != nil {
+			return file{}, &unreadableError{Path(), err}
+		}
 	}
 	return f, nil
 }
+
+// validProviders is providers.json's contents read as the catalog.
+func validProviders(b []byte) bool {
+	var f file
+	return json.Unmarshal(bytes.TrimPrefix(b, utf8BOM), &f) == nil
+}
+
+var utf8BOM = []byte("\xef\xbb\xbf")
 
 // FileError is why providers.json can't be read, nil when it can or isn't
 // there: for what lists the providers to say so, not "none yet".
 func FileError() error {
 	_, err := read()
 	return err
+}
+
+// Routings is the routing of each provider and group providers.json sets
+// one for, read from the file alone: for what asks often (the rotation
+// plugin's InUse), without building the catalog and reading every sign-in.
+func Routings() ([]string, error) {
+	f, err := read()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, p := range f.Providers {
+		if p.Routing != "" {
+			out = append(out, p.Routing)
+		}
+	}
+	for _, g := range f.Groups {
+		if g.Routing != "" {
+			out = append(out, g.Routing)
+		}
+	}
+	return out, nil
 }
 
 // store replaces providers.json whole, through a file renamed over it, so
@@ -342,6 +542,9 @@ func store(f file) error {
 	if err != nil {
 		return err
 	}
+	if err := lastgood.Keep(p, validProviders, 0o600); err != nil {
+		return err
+	}
 	if err := writePrivate(p, append(b, '\n')); err != nil {
 		return err
 	}
@@ -359,9 +562,17 @@ func store(f file) error {
 // over, past the 5 s Codex waits for the list (#746).
 func All() []Provider {
 	held := heldOf("all", allProviders)
-	out := make([]Provider, len(held))
-	for i, p := range held {
-		out[i] = p.clone() // callers change theirs, Keys[i] and Headers included
+	out := make([]Provider, 0, len(held))
+	// asked once, from the settings a held look has read already: asked for
+	// each account, settings.json was parsed for every account of every
+	// model's price (agent.magpieModels, the GUI's drift every 15s and dsh's
+	// round every 30s), most of an idle magpie's CPU (xsw on Discord)
+	off := sync.OnceValue(func() bool { return settings.AccountDiscoveryOffIn(heldSettings()) })
+	for _, p := range held {
+		if p.Account != nil && off() {
+			continue
+		}
+		out = append(out, p.clone()) // callers change theirs, Keys[i] and Headers included
 	}
 	return out
 }
@@ -372,9 +583,20 @@ func (p Provider) clone() Provider {
 	p.Keys = slices.Clone(p.Keys)
 	p.Fallback = slices.Clone(p.Fallback)
 	p.Models = slices.Clone(p.Models)
+	p.PickedFrom = slices.Clone(p.PickedFrom)
+	p.AutoInclude = slices.Clone(p.AutoInclude)
 	p.Headers = maps.Clone(p.Headers)
+	p.ExtraBody = maps.Clone(p.ExtraBody)
 	p.AccountProxies = maps.Clone(p.AccountProxies)
 	p.AccountCaps = maps.Clone(p.AccountCaps)
+	p.AccountNames = maps.Clone(p.AccountNames)
+	if p.AccountWindowCaps != nil {
+		m := make(map[string]map[string]int, len(p.AccountWindowCaps))
+		for k, v := range p.AccountWindowCaps {
+			m[k] = maps.Clone(v)
+		}
+		p.AccountWindowCaps = m
+	}
 	p.AccountConcurrency = maps.Clone(p.AccountConcurrency)
 	p.Contexts = maps.Clone(p.Contexts)
 	if p.AccountModels != nil {
@@ -392,6 +614,10 @@ func (p Provider) clone() Provider {
 		v := *p.ZhipuTeam
 		p.ZhipuTeam = &v
 	}
+	if p.Vertex != nil {
+		v := *p.Vertex
+		p.Vertex = &v
+	}
 	return p // Account, the sign-in's runtime, stays shared
 }
 
@@ -406,7 +632,7 @@ func allProviders() []Provider {
 	var out []Provider
 	for _, p := range stored {
 		p = normalize(p)
-		if p.Chat == "" && p.Responses == "" && p.Anthropic == "" && p.Decide == "" {
+		if !hasEndpoint(p) {
 			picks[p.ID] = p
 			continue
 		}
@@ -416,13 +642,7 @@ func allProviders() []Provider {
 		if _, taken := find(out, a.ID); taken || picks[a.ID].Hidden {
 			continue
 		}
-		pk := picks[a.ID]
-		a.Models, a.Unlisted, a.Off, a.Fallback, a.Routing, a.Affinity, a.KeepLogin, a.KeepLoginAs, a.Contexts, a.Family = pk.Models, pk.Unlisted, pk.Off, pk.Fallback, pk.Routing, pk.Affinity, pk.KeepLogin, pk.KeepLoginAs, pk.Contexts, pk.Family
-		a.Sink = pk.Sink
-		a.Proxy, a.AccountProxies, a.AccountModels = pk.Proxy, pk.AccountProxies, pk.AccountModels
-		a.AccountCaps = pk.AccountCaps
-		a.MaxConcurrency, a.PinUpstream = pk.MaxConcurrency, pk.PinUpstream
-		a.AccountConcurrency, a.QueueLimit, a.QueueWait = pk.AccountConcurrency, pk.QueueLimit, pk.QueueWait
+		a = withPicks(a, picks[a.ID])
 		if a.ID == "cursor" { // picked before its efforts were one model
 			a.Models = cursorPicks(a.Models)
 		}
@@ -432,6 +652,30 @@ func allProviders() []Provider {
 		out = append(out, a)
 	}
 	return ordered(out, f.Order)
+}
+
+// withPicks is the signed-in account a with what the user set on its
+// provider (pk, as providers.json keeps it): its models, routing, limits
+// and queue. The account the agent is signed in to gets them in All, and
+// each other account in use beside it in AlsoOn, so that every account of
+// the provider keeps the same settings (#1899: a second WorkBuddy AI
+// account queued 62s with the wait set to 1s).
+func withPicks(a, pk Provider) Provider {
+	a.PickedFrom = pk.PickedFrom
+	a.Models, a.Unlisted, a.Off, a.Fallback, a.Routing, a.Affinity, a.KeepLogin, a.KeepLoginAs, a.Contexts, a.Family = pk.Models, pk.Unlisted, pk.Off, pk.Fallback, pk.Routing, pk.Affinity, pk.KeepLogin, pk.KeepLoginAs, pk.Contexts, pk.Family
+	a.SwitchOnly = pk.SwitchOnly
+	a.Sink, a.NoModels = pk.Sink, pk.NoModels
+	a.NativeCompaction = pk.NativeCompaction
+	a.Proxy, a.AccountProxies, a.AccountModels = pk.Proxy, pk.AccountProxies, pk.AccountModels
+	a.AccountCaps, a.AccountWindowCaps = pk.AccountCaps, pk.AccountWindowCaps
+	a.AccountNames = pk.AccountNames
+	a.MaxConcurrency, a.PinUpstream = pk.MaxConcurrency, pk.PinUpstream
+	a.AccountConcurrency, a.QueueLimit, a.QueueWait = pk.AccountConcurrency, pk.QueueLimit, pk.QueueWait
+	a.MaxRPM = pk.MaxRPM
+	// the extra body fields written for it, which a ChatGPT account's
+	// requests take (WithExtraBody, magpie-releases#18)
+	a.ExtraBody = pk.ExtraBody
+	return a
 }
 
 // Hidden lists the signed-in accounts the user removed from magpie.
@@ -503,12 +747,21 @@ func Slug(name string) string {
 
 // Save adds or replaces a provider.
 func Save(p Provider) error {
+	// a key given a Vertex AI provider is refused here, before normalize
+	// drops it: it would never be sent
+	if p.IsVertex() && (strings.TrimSpace(p.Key) != "" || len(p.Keys) > 0) {
+		return errors.New("Google Vertex AI is asked with your Google credentials, not an API key")
+	}
 	p = normalize(p)
 	p.IconURL = "" // import-only: never stored
 	if p.ID == "" {
 		p.ID = Slug(p.Name)
 	}
-	if p.ID == "" || p.ID != Slug(p.ID) {
+	// an id stored already is the provider's, whatever it is: one put in
+	// providers.json by hand ("b.ai") was refused on every Save, so the
+	// editor could neither change it nor rename it to one that is right
+	// (01huadalang on Discord: 我不管改成什么都显示不能用 b.ai)
+	if p.ID == "" || p.ID != Slug(p.ID) && !stored(p.ID) {
 		return fmt.Errorf("provider id must be lowercase letters, digits and dashes, not %q", p.ID)
 	}
 	if p.ID == "magpie" {
@@ -536,23 +789,30 @@ func Save(p Provider) error {
 		if p.ID == "kiro" {
 			key = p.Key
 		}
-		p = Provider{ID: p.ID, Key: key, Models: p.Models, Unlisted: p.Unlisted, Off: p.Off, Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, Contexts: p.Contexts, Family: p.Family, Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, MaxConcurrency: p.MaxConcurrency, AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, PinUpstream: p.PinUpstream, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID), Tucked: tuckedAccount(p.ID)}
+		p = Provider{ID: p.ID, Key: key, Models: p.Models, NoModels: p.NoModels, PickedFrom: p.PickedFrom, Unlisted: p.Unlisted, Off: p.Off, Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, Contexts: p.Contexts, Family: p.Family, Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, MaxConcurrency: p.MaxConcurrency, AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM, QuotaRest: p.QuotaRest, QuotaResetAt: p.QuotaResetAt, RestCap: p.RestCap, PinUpstream: p.PinUpstream, NativeCompaction: p.NativeCompaction, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID), Tucked: tuckedAccount(p.ID)}
 	} else {
-		p.AccountProxies = nil // a provider of a key has no accounts to proxy apart
+		p.AccountProxies = keyProxies(p) // a provider of keys proxies each key apart
 		if subscriptionID(p.ID) && !stored(p.ID) {
 			// taken, it would hide that subscription once signed in
 			return fmt.Errorf("%q is the id of the %s subscription; pick another name", p.ID, p.ID)
 		}
-		if p.Chat == "" && p.Responses == "" && p.Anthropic == "" && p.Decide == "" {
+		if p.IsVertex() {
+			if err := p.Vertex.check(); err != nil {
+				return err
+			}
+		} else if !hasEndpoint(p) {
 			if p.Preset == AzurePreset {
 				return errors.New("Azure OpenAI needs your resource's endpoint, e.g. https://<resource>.openai.azure.com")
 			}
 			return errors.New("a provider needs a base URL")
 		}
+		if p.InsecureTLS && !p.TakesInsecureTLS() {
+			return fmt.Errorf("%s is a preset's: only a provider you added with your own base URL can skip the certificate check", p.Name)
+		}
 		if strings.Contains(p.Decide, WorkspaceID) {
 			return errors.New("Bailian's decision model is asked at your workspace's host: give its workspace ID (workspace=… or the editor's Workspace ID), or pick the Token Plan")
 		}
-		if p.Key == "" && !keyOptional(p) {
+		if p.Key == "" && !keyOptional(p) && !p.IsVertex() {
 			return fmt.Errorf("%s needs an API key", p.Name)
 		}
 	}
@@ -560,17 +820,67 @@ func Save(p Provider) error {
 	if err != nil {
 		return err
 	}
-	for i := range f.Providers {
-		if f.Providers[i].ID == p.ID {
-			if p.Was == nil {
-				p.Was = f.Providers[i].Was
-			}
-			f.Providers[i] = p
-			return store(f)
-		}
+	i := slices.IndexFunc(f.Providers, func(q Provider) bool { return q.ID == p.ID })
+	var was *Provider
+	if i >= 0 {
+		was = &f.Providers[i]
 	}
-	f.Providers = append(f.Providers, p)
-	return store(f)
+	p.PickedFrom = listedWith(p, was)
+	if was != nil {
+		if p.Was == nil {
+			p.Was = was.Was
+		}
+		if sameStored(*was, p) {
+			// Save pressed on an editor left as it was: providers.json
+			// would be written byte for byte as it is, and its write
+			// handed the catalog to every agent again (agent.SyncCatalog),
+			// seconds of CPU with many agents set up (#1962, witt-bit)
+			return nil
+		}
+		f.Providers[i] = p
+	} else {
+		f.Providers = append(f.Providers, p)
+	}
+	if err := store(f); err != nil {
+		return err
+	}
+	if p.ID == "claude" {
+		// an account's proxy picked in the editor reaches Claude Code at
+		// once, not at the gateway's next look (#1807)
+		syncClaudeProxyEnvNow()
+	}
+	return nil
+}
+
+// sameStored is whether a and b are written to providers.json alike.
+func sameStored(a, b Provider) bool {
+	x, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	y, err := json.Marshal(b)
+	return err == nil && bytes.Equal(x, y)
+}
+
+// listedWith is what p.PickedFrom is saved as: none without picks; what was
+// kept with the picks when they are the same picks; and the models listed
+// now when the picks are new, as the user picked them from that list.
+func listedWith(p Provider, was *Provider) []string {
+	if len(p.Models) == 0 {
+		return nil
+	}
+	if was != nil && slices.Equal(normalModels(was.Models), normalModels(p.Models)) {
+		return was.PickedFrom
+	}
+	from := p
+	if q, err := Find(p.ID); err == nil {
+		from = *q // with its account, whose list it is
+	}
+	var ids []string
+	for _, m := range from.Available() {
+		ids = append(ids, m.ID)
+	}
+	return ids
 }
 
 // Add saves a provider the user just added, beside those already here: an
@@ -601,7 +911,14 @@ func add(p Provider, once bool) (string, error) {
 		}
 	}
 	p.ID, p.Name = freeID(p.ID), freeName(p.Name)
-	return p.ID, Save(p)
+	if err := Save(p); err != nil {
+		return p.ID, err
+	}
+	if p.Preset != "" {
+		// a provider added from a partner counts for it (partner_events.go)
+		CountPartner(PartnerAdded, p.Preset)
+	}
+	return p.ID, nil
 }
 
 // AddCopy adds p, a copy the user made of the provider from (#268), beside
@@ -626,14 +943,26 @@ func AddCopy(p Provider, from string) (string, error) {
 	if p.BalanceToken == "" {
 		p.BalanceToken = src.BalanceToken
 	}
+	// the access key as the copy's editor showed it: the form sends its ID
+	// but never the saved Secret, which went missing from the copy (#1821)
+	if p.SecretAccessKey == "" && (p.AccessKeyID == "" || p.AccessKeyID == src.AccessKeyID) {
+		p.AccessKeyID, p.SecretAccessKey = src.AccessKeyID, src.SecretAccessKey
+	}
 	if p.ZhipuTeam == nil {
 		p.ZhipuTeam = src.ZhipuTeam
+	}
+	if p.Vertex == nil && src.Vertex != nil {
+		v := *src.Vertex
+		p.Vertex = &v
 	}
 	if p.Fallback == nil {
 		p.Fallback = slices.Clone(src.Fallback)
 	}
 	p.Unlisted = p.Unlisted || src.Unlisted
 	p.Searches = p.Searches || src.Searches
+	p.Unredacted = p.Unredacted || src.Unredacted
+	p.NativeCompaction = p.NativeCompaction || src.NativeCompaction
+	p.PassUserAgent = p.PassUserAgent || src.PassUserAgent
 	if p.Website == "" {
 		p.Website = src.Website
 	}
@@ -646,7 +975,7 @@ func AddCopy(p Provider, from string) (string, error) {
 // hostID is an id for a provider from the host it is on: api.relay.com is
 // relay, and one on an IP address, or with no address, is custom.
 func hostID(p Provider) string {
-	for _, u := range []string{p.Chat, p.Responses, p.Anthropic} {
+	for _, u := range []string{p.Chat, p.Responses, p.Anthropic, p.Gemini} {
 		h := hostOf(u)
 		if host, _, err := net.SplitHostPort(h); err == nil {
 			h = host
@@ -809,7 +1138,12 @@ func Delete(id string) error {
 		return fmt.Errorf("no provider %q", id)
 	}
 	f.Providers = keep
-	return store(f)
+	if err := store(f); err != nil {
+		return err
+	}
+	// its StepFun sign-in goes with it, not to a provider added later
+	// under the same id
+	return forgetStepFun(id)
 }
 
 // keyOptional is true for local servers, which usually have no key.
@@ -829,9 +1163,26 @@ func normalize(p Provider) Provider {
 	p.AccountProxies = normalAccountProxies(p.AccountProxies)
 	p.AccountModels = normalAccountModels(p.AccountModels)
 	p.AccountCaps = normalAccountCaps(p.AccountCaps)
+	p.AccountWindowCaps = normalWindowCaps(p.AccountWindowCaps)
+	p.AccountNames = normalAccountNames(p.AccountNames)
+	if len(p.Models) > 0 {
+		p.NoModels = false // a pick is no longer Select none
+	}
 	p.ZhipuTeam = p.ZhipuTeam.normal()
+	p.Vertex = p.Vertex.Normal()
+	if !p.IsVertex() {
+		p.Vertex = nil
+	} else {
+		// asked only at the address its project and location make, with a
+		// Google token that no other address is to be sent, and never with
+		// a key: one put in providers.json by hand is dropped, so it stands
+		// in for neither that token nor a project, and the provider as
+		// found still saves
+		p.Chat, p.Responses, p.Anthropic, p.Gemini, p.Decide = "", "", "", "", ""
+		p.Key, p.KeyName, p.Keys, p.KeyProtocol, p.KeyWeight = "", "", nil, "", 0
+	}
 	p.remoteMagpieEndpoints()
-	for _, u := range []*string{&p.Chat, &p.Responses, &p.Anthropic, &p.Decide, &p.Website, &p.KeysURL} {
+	for _, u := range []*string{&p.Chat, &p.Responses, &p.Anthropic, &p.Gemini, &p.Decide, &p.Website, &p.KeysURL} {
 		*u = strings.TrimRight(strings.TrimSpace(*u), "/")
 		if *u != "" && !strings.Contains(*u, "://") {
 			*u = "https://" + *u
@@ -847,6 +1198,11 @@ func normalize(p Provider) Provider {
 			break
 		}
 	}
+	p.Gemini = GeminiBase(p.Gemini)
+	// a pick whose URL is gone (cleared from the CLI) is no pick
+	if p.BaseAPI != "" && p.baseOf(p.BaseAPI) == "" {
+		p.BaseAPI = ""
+	}
 	p.Models = cleanList(p.Models)
 	p.Fallback = cleanList(p.Fallback)
 	// a provider saved under an id a preset carried before (presetAliases:
@@ -860,8 +1216,8 @@ func normalize(p Provider) Provider {
 	// OpenCode Zen serves its free models (-free) signed out, to the key
 	// OpenCode itself sends then: a Zen provider saved with no key of its
 	// own asks with that one
-	if p.Preset == "opencode-zen" && p.Key == "" {
-		p.Key = OpenCodeAnonymousKey
+	if anon := p.AnonymousKey(); anon != "" && p.Key == "" {
+		p.Key = anon
 	}
 	// a Zen provider saved before its preset had System One for Jev
 	// (01huadalang: its Jev was asked as a chat model, and failed), an
@@ -871,17 +1227,33 @@ func normalize(p Provider) Provider {
 			p.Decide = pr.Decide
 		}
 	}
-	if p.Routing != Ordered && p.Routing != Rotate && p.Routing != LeastUsed && p.Routing != Pace && p.Routing != Weighted {
+	// an oMLX or MLX-Serve provider saved before its preset had System One (#1641)
+	// asks it where its chat completions are, at whatever port it was given
+	if (p.Preset == OMLXPreset || p.Preset == MLXServePreset) && p.Decide == "" && p.Chat != "" {
+		p.Decide = p.Chat
+	}
+	if p.Routing != Ordered && p.Routing != Rotate && p.Routing != LeastUsed && p.Routing != Pace && p.Routing != Weighted && !PluginRouting(p.Routing) {
 		p.Routing = ""
 	}
 	if !slices.Contains(Affinities, p.Affinity) {
 		p.Affinity = ""
+	}
+	if !slices.Contains(AuthChoices, p.AuthHeader) {
+		p.AuthHeader = AuthBoth
 	}
 	if p.MaxConcurrency != nil && *p.MaxConcurrency < 0 {
 		p.MaxConcurrency = new(int)
 	}
 	p.AccountConcurrency = normalAccountConcurrency(p.AccountConcurrency)
 	p.QueueLimit, p.QueueWait = min(max(p.QueueLimit, 0), MaxQueueLimit), min(max(p.QueueWait, 0), MaxQueueWait)
+	p.MaxRPM = min(max(p.MaxRPM, 0), MaxRPMLimit)
+	p.QuotaRest = min(max(p.QuotaRest, 0), MaxQuotaRest)
+	if p.RestCap != RestCapOff {
+		p.RestCap = min(max(p.RestCap, 0), MaxQuotaRest)
+	}
+	if _, err := ParseResetAt(p.QuotaResetAt); err != nil {
+		p.QuotaResetAt = ""
+	}
 	p.Catalog = strings.Join(p.Catalogs(), ", ")
 	// a Bedrock provider saved before the preset had its Responses API
 	// (#176) gets it where its chat completions are: the runtime serves both
@@ -892,9 +1264,12 @@ func normalize(p Provider) Provider {
 	// Azure OpenAI's resource, however its endpoint was pasted, is asked
 	// on its v1 API, chat completions and Responses both (azure.go)
 	p.azureEndpoints()
+	// OpenCode Zen's or Go's other APIs, beside the one it was given (#1215)
+	p.openCodeEndpoints()
 	// a preset's provider keeps its headers too: the preset gives the
 	// endpoints and catalog, the headers say which workspace or app it is
 	p.Headers = cleanHeaders(p.Headers)
+	p.ExtraBody = cleanExtraBody(p.ExtraBody)
 	if pr := Preset(p.Preset); pr != nil {
 		if p.Icon == "" {
 			p.Icon = pr.Icon
@@ -967,6 +1342,24 @@ func contains(xs []string, x string) bool {
 	return false
 }
 
+// baseOf is the URL saved for one of the editor's Base URL APIs (BaseAPI),
+// "" for an API it doesn't know.
+func (p Provider) baseOf(api string) string {
+	switch api {
+	case "chat":
+		return p.Chat
+	case "responses":
+		return p.Responses
+	case "anthropic":
+		return p.Anthropic
+	case "gemini":
+		return p.Gemini
+	case "decide":
+		return p.Decide
+	}
+	return ""
+}
+
 // Base returns the base URL for a protocol, or "" when the vendor lacks it.
 func (p Provider) Base(proto Protocol) string {
 	switch proto {
@@ -982,10 +1375,14 @@ func (p Provider) Base(proto Protocol) string {
 		}
 	case Gemini:
 		// Factory's Gemini models are generateContent at /api/llm/g, not
-		// Code Assist. No other provider speaks Gemini upstream.
-		if p.ID == "factory" && p.Account != nil {
+		// Code Assist; Vertex AI's at the user's project (VertexPath)
+		if p.FactoryGemini() {
 			return factoryAPI + "/api/llm/g/v1"
 		}
+		if p.IsVertex() {
+			return p.vertexBase()
+		}
+		return p.Gemini
 	}
 	return ""
 }
@@ -1008,15 +1405,31 @@ func (p Provider) Speaks() []Protocol {
 	}
 	// Factory's Gemini models, on generateContent. A model droid didn't
 	// list stays on the other three (factoryAPIs); this is not one of them.
-	if p.ID == "factory" && p.Account != nil {
+	// A custom provider's Gemini API comes after the others it has.
+	// Vertex AI's, on generateContent alone, at its project.
+	if p.IsVertex() {
+		if p.vertexBase() != "" {
+			out = append(out, Gemini)
+		}
+	} else if p.FactoryGemini() || p.Gemini != "" {
 		out = append(out, Gemini)
 	}
 	return out
 }
 
+// FactoryGemini is Factory's sign-in, whose Gemini models are asked on its
+// own generate route (…/generate, the model in the body), not at
+// models/{model}:streamGenerateContent as Google's Gemini API asks them.
+func (p Provider) FactoryGemini() bool { return p.ID == "factory" && p.Account != nil }
+
 // ResponsesFirst: an OpenAI model on OpenAI's API, Copilot's, PipeLLM's or Bedrock's,
-// which is best asked on the Responses API though Chat serves it too.
+// which is best asked on the Responses API though Chat serves it too; and
+// every model where only the Responses API tells what the vendor's cache
+// answered (ResponsesTellsCache).
 func (p Provider) ResponsesFirst(model string) bool {
+	if p.ResponsesTellsCache() {
+		return true
+	}
 	if p.Responses != "" && p.IsBedrock() {
 		return bedrockGPT(model)
 	}
@@ -1026,6 +1439,24 @@ func (p Provider) ResponsesFirst(model string) bool {
 		return false
 	}
 	return openAIModel(model)
+}
+
+// ResponsesTellsCache is a provider whose Responses API says how much of
+// the prompt its cache answered (input_tokens_details.cached_tokens) and
+// what the model reasoned, while its Chat API, served by the same cache,
+// says neither: ModelScope's API-Inference, by its preset or its host
+// (#1578, sparrowbits: Claude Desktop, translated to Chat, read 0 of 34.9M
+// tokens from cache; Codex on Responses, 94%). A translated request goes
+// there on Responses, and an agent that asks each model on one API is
+// wired to it. Other vendors with both URLs keep Chat: their Chat reports
+// its cache (Groq, Volcengine Ark), their Claude-format requests go to
+// their Anthropic URL as they are, or nothing is known of their Responses
+// API (a relay the user added).
+func (p Provider) ResponsesTellsCache() bool {
+	if p.Responses == "" || p.Chat == "" {
+		return false
+	}
+	return p.Preset == "modelscope" || HostOf(p.Responses) == "api-inference.modelscope.cn"
 }
 
 // MessagesFirst: a Claude model where the provider has Anthropic's Messages
@@ -1135,8 +1566,7 @@ func (p Provider) Where() string {
 // which routes and caches by conversation and turns away requests that do
 // not name one in x-opencode-session.
 func (p Provider) IsOpenCode() bool {
-	h := p.Host()
-	return h == "opencode.ai" || strings.HasSuffix(h, ".opencode.ai")
+	return OpenCodeURL("//" + p.Host()) // its port, if it names one, aside
 }
 
 // IsBedrock reports whether the provider is Amazon Bedrock's runtime: made
@@ -1188,8 +1618,15 @@ func Mask(s string) string {
 }
 
 // Ready reports whether the provider can be used: it has a key, needs
-// none, or is a signed-in agent.
-func (p Provider) Ready() bool { return p.Account != nil || p.Key != "" || keyOptional(p) }
+// none, is a signed-in agent, or is Vertex AI at a project (whose
+// credentials are read when a request is signed).
+func (p Provider) Ready() bool {
+	if p.IsVertex() {
+		// signed with a Google token, at the address its project makes
+		return p.vertexBase() != ""
+	}
+	return p.Account != nil || p.Key != "" || keyOptional(p)
+}
 
 // On is whether the provider takes requests: ready, and not switched off.
 func (p Provider) On() bool { return p.Ready() && !p.Off }

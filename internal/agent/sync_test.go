@@ -15,6 +15,7 @@ import (
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
+	"github.com/yetone/magpie/internal/testenv"
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,16 +26,21 @@ func syncHome(t *testing.T) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	t.Setenv("CODEX_HOME", "")
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
 	t.Setenv("HERMES_HOME", "")
 	t.Setenv("MIMOCODE_HOME", "")
+	t.Setenv("DEVECO_CONFIG_DIR", "")
 	t.Setenv("HANA_HOME", "")
 	t.Setenv("DSH_HOME", "")
 	t.Setenv("OMO_CODING_AGENT_DIR", "")
 	t.Setenv("SENPI_CODING_AGENT_DIR", "")
+	t.Setenv("PRIME_AGENT_CODING_AGENT_DIR", "")
+	t.Setenv("MOTHX_DIR", "")
 	t.Setenv("PI_CODING_AGENT_DIR", "")
 	t.Setenv("PI_CONFIG_DIR", "")
 	t.Setenv("OMP_PROFILE", "")
@@ -59,9 +65,7 @@ func noKeychain(t *testing.T) {
 		return
 	}
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "security"), []byte("#!/bin/sh\nexit 44\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testenv.Program(t, filepath.Join(bin, "security"), "#!/bin/sh\nexit 44\n")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -134,8 +138,8 @@ func TestCrushModelsCarryMaxTokens(t *testing.T) {
 // magpie hands an output limit; one whose window isn't known keeps its
 // output. ZCode and WorkBuddy cap it at zcodeMaxOutput besides, Crush falls
 // back to 16384 without a known output, OpenCode is handed no limit without
-// a window, and AtomCode, told a 128000 window when the model's isn't known,
-// is cut to that.
+// a window, and AtomCode and Snow CLI, each told a window of its own when
+// the model's isn't known, are cut to that.
 func TestMaxTokensWithinContextWindow(t *testing.T) {
 	home := syncHome(t)
 	check := func(limit string, want int) {
@@ -157,6 +161,10 @@ func TestMaxTokensWithinContextWindow(t *testing.T) {
 			t.Fatal(err)
 		}
 		atomcodeCfg, _ := os.ReadFile(atomcode)
+		snowOut, _, err := snowProfileFor(nil, false, gatewayV1(), "k", "relay/glm-4.6", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
 		rules, wb := filepath.Join(t.TempDir(), "provider_config.json"), filepath.Join(t.TempDir(), "models.json")
 		if err := zcodeRules(rules, true, true); err != nil {
 			t.Fatal(err)
@@ -171,6 +179,10 @@ func TestMaxTokensWithinContextWindow(t *testing.T) {
 		if !strings.Contains(limit, "context") {
 			told = strconv.Itoa(min(want, atomcodeContext))
 		}
+		snowTold := n
+		if !strings.Contains(limit, "context") {
+			snowTold = strconv.Itoa(min(want, snowContext))
+		}
 		wants := map[string][2]string{
 			"pi":          {string(pi), `"maxTokens":` + n},
 			"cline":       {string(cline), `"maxTokens":` + n},
@@ -184,6 +196,7 @@ func TestMaxTokensWithinContextWindow(t *testing.T) {
 			"zcode rules": {string(zcRules), `"max":` + capped},
 			"workbuddy":   {string(wbModels), `"maxOutputTokens": ` + capped},
 			"atomcode":    {string(atomcodeCfg), "max_tokens = " + told},
+			"snow":        {string(snowOut), `"maxTokens": ` + snowTold},
 		}
 		if strings.Contains(limit, "context") {
 			wants["opencode"] = [2]string{string(opencode), `"output":` + n}

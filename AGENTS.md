@@ -25,59 +25,41 @@ alternate names, suffixes or codenames. Where the fork still contains
 magpie identifiers internally, rename them as the surrounding code is
 touched rather than in one sweeping pass.
 
-**Status: nothing is built yet.** This repository currently holds only
-`docs/`. There is no Go module, no module path and no shell code.
+**Status: project initialized and synced to latest upstream `yetone/magpie`.**
+- Upstream: synced from `https://github.com/yetone/magpie.git` at commit `674b6ca2881f1289c4ccdec158762978a463320c` (`v0.1.1265`).
+- Architecture: Echo does not use magpie's Wails or webview/HTML/JS frontend. Echo completely replaces the desktop shell with [MyGo](https://mygo.egoist.dev/) native UI (package `ui`), while reusing magpie's Go gateway, providers, agents, sessions, and domain logic.
+- Desktop Shell: implemented in `internal/shell/` with MyGo native UI, support for sidebar navigation (Work, Models, Insights, Extend), real agent & plugin inspection, settings, and tray integration.
+- Build target: `make echo` builds the Echo app using `CGO_ENABLED=0 go build -tags "nogui,echo" -o echo .`.
+- Verification probe: `make probe` renders and checks all views headlessly and verifies navigation, plugins, and agents.
 
 ## Repository
 
 - **Remote: <https://github.com/aohun/Echo.git>** (`origin`). This is the
   only canonical remote. Do not push to, or read from, `EchoHub` or any
   other similarly named repository — it is a separate, unrelated project.
-- The remote was empty when the local repository was created, so the local
-  `master` branch is the source of truth until the first push.
-- `/Users/wayne/Desktop/git/magpie` is a **read-only reference**. Never
-  commit to it, never push from it, and never treat its `echohub` remote
-  as Echo's.
+- The local `master` branch tracks Echo development.
+- Upstream reference: `https://github.com/yetone/magpie.git`.
 
 ## The two things to understand first
 
 ### 1. The reference implementation: magpie
 
-- Checkout: `/Users/wayne/Desktop/git/magpie`, commit `9f0bd95b`
-  (2026-10-06). It is a **fork of `yetone/magpie`**, not the official
-  release; the fork adds Codex reset notifications. Module path
-  `github.com/yetone/magpie`, Go 1.26.3, MIT.
-- Size: ~201,000 production lines plus ~194,912 lines of tests.
-- Stack: Wails v3 (`v3.0.0-beta.24`) for the shell, hand-written
-  JavaScript with no framework and no bundler for the frontend.
-- Its `docs/subsystems/` (agent-wiring, gateway-routing,
-  providers-accounts, gui-shell, library, provider-plugins,
-  gateway-middleware, claude-subscription-bridge) is the most valuable
-  material in the checkout. Read the originals; the summaries in our
-  `docs/01` drop runtime paths and verification commands.
+- Upstream source: `https://github.com/yetone/magpie`, latest commit `674b6ca2` (2026-10-16).
+- Reused code: all domain packages (`internal/gateway`, `internal/provider`, `internal/agent`, `internal/sessions`, `internal/library`, `internal/usage`, `internal/catalog`, `internal/settings`, `internal/cli`, etc.).
+- Replaced code: `internal/gui` (Wails shell + web assets) is replaced by `internal/shell` (MyGo native UI).
 - **The tests are the specification.** The gateway invariants — no
   half-replies, the 15-second and 5-minute keepalive, failure classes that
   must not be merged, affinity around prompt-cache worth — are encoded in
   tests, not prose.
 
-Paths in our `docs/` that look like `internal/gui/api.go` are magpie's
-source, not Echo's. Verify a citation against the magpie checkout before
-acting on it.
-
 ### 2. The target framework: MyGo
 
-- Docs: <https://mygo.egoist.dev/> — the authority. Read it rather than
-  relying on our summaries; this repository was written against 0.4.5.
+- Docs: <https://mygo.egoist.dev/> — the authority.
 - Checkout: `/Users/wayne/Desktop/git/mygo`, tag `v0.4.5`, module
   `github.com/egoist/mygo`, Go 1.27.1, MIT.
 - Pure Go, **no cgo**: native calls go through `purego` on macOS and Linux
   and `syscall` on Windows. `mygo build` defaults to `CGO_ENABLED=0`.
-- Two window kinds: web frontend in the system webview (WKWebView,
-  WebKitGTK, WebView2), or native UI drawn by MyGo (package `ui`).
-- The strongest reason to choose it over a Wails-style stack: `mygo.Bind`
-  plus `mygo generate` produce a **typed TypeScript client** from the Go
-  service surface, which removes the class of hand-maintained
-  Go↔page invariants magpie pays for across 45,201 frontend lines.
+- Shell UI: native UI drawn by MyGo (package `ui`). No HTML, no JS, no webview.
 
 ## Authorized plan: Plan A
 

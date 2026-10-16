@@ -22,7 +22,6 @@ import (
 	"errors"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -35,17 +34,18 @@ import (
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/proc"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // CursorExecutable finds the cursor-agent CLI; a var so tests can fake it.
 var CursorExecutable = func() string {
 	for _, name := range []string{"cursor-agent", "agent"} {
-		if p, err := exec.LookPath(name); err == nil && (name == "cursor-agent" || isCursorAgent(p)) {
+		if p, err := proc.LookPath(name); err == nil && (name == "cursor-agent" || isCursorAgent(p)) {
 			return p
 		}
 	}
 	home, _ := os.UserHomeDir()
-	for _, p := range []string{filepath.Join(home, ".local", "bin", "cursor-agent"), "/usr/local/bin/cursor-agent", "/opt/homebrew/bin/cursor-agent"} {
+	for _, p := range append([]string{filepath.Join(home, ".local", "bin", "cursor-agent")}, proc.SystemDirs("/usr/local/bin/cursor-agent", "/opt/homebrew/bin/cursor-agent")...) {
 		if st, err := os.Stat(p); err == nil && !st.IsDir() {
 			return p
 		}
@@ -62,13 +62,18 @@ func isCursorAgent(path string) bool {
 var cursorStatus = &cliIdentity{name: "cursor", exe: func() string { return CursorExecutable() }, ask: askCursorStatus}
 
 // cursorIdentity is who Cursor's CLI says is signed in; see cliIdentity.
-func cursorIdentity() (user, plan string, ok bool) { return cursorStatus.get() }
+func cursorIdentity() (user, plan string, ok bool) {
+	if settings.AccountDiscoveryOff() {
+		return "", "", false
+	}
+	return cursorStatus.get()
+}
 
 // forgetCursorStatus has who is signed in, and the token, read afresh.
 func forgetCursorStatus() {
 	cursorStatus.forget()
 	cursorTok.Lock()
-	cursorTok.at = time.Time{}
+	cursorTok.at, cursorTok.ask = time.Time{}, time.Time{}
 	cursorTok.Unlock()
 }
 
@@ -82,6 +87,9 @@ func askCursorIdentity() (user, plan string, ok bool) {
 // runs out of time (it asks Cursor's servers) or prints something other
 // than its JSON couldn't tell, and the account stays as it was (#154).
 func askCursorStatus() (user, plan string, ok bool, err error) {
+	if settings.AccountDiscoveryOff() {
+		return "", "", false, nil
+	}
 	path := CursorExecutable()
 	if path == "" {
 		return "", "", false, nil
@@ -326,11 +334,14 @@ func cursorAuthFile() string {
 
 // cursorTok is the token cursor-agent keeps in the Keychain as last read,
 // and when: every look at whether Cursor is signed in ran `security`, a
-// plugin's accounts for each build of the providers (#746).
+// plugin's accounts for each build of the providers (#746). ask is when a
+// read could have shown the user a dialog: one the user answered no to is
+// not asked again inside keychainDeniedTTL (#2408).
 var cursorTok struct {
 	sync.Mutex
 	tok string
 	at  time.Time
+	ask time.Time
 }
 
 // cursorTokenTTL is how long a token read from the Keychain is taken as
@@ -341,15 +352,28 @@ const cursorTokenTTL = 10 * time.Second
 // cursorKeychainToken is cursor-agent's token in the Keychain, "" for none;
 // fresh reads it whatever was read last.
 func cursorKeychainToken(fresh bool) string {
+	if settings.AccountDiscoveryOff() {
+		return ""
+	}
 	cursorTok.Lock()
 	defer cursorTok.Unlock()
-	if !fresh && time.Since(cursorTok.at) < cursorTokenTTL {
+	ttl := cursorTokenTTL
+	if cursorTok.tok == "" && time.Since(cursorTok.ask) < keychainDeniedTTL {
+		ttl = keychainDeniedTTL
+	}
+	if !fresh && time.Since(cursorTok.at) < ttl {
 		return cursorTok.tok
 	}
 	out, err := proc.Command("security", "find-generic-password", "-s", "cursor-access-token", "-a", "cursor-user", "-w").Output()
 	cursorTok.tok, cursorTok.at = "", time.Now()
-	if err == nil {
+	switch {
+	case err == nil:
 		cursorTok.tok = strings.TrimSpace(string(out))
+		cursorTok.ask = time.Time{}
+	case keychainDenied(err):
+		cursorTok.ask = cursorTok.at
+	default:
+		cursorTok.ask = time.Time{}
 	}
 	return cursorTok.tok
 }
@@ -359,12 +383,15 @@ func readCursorToken() string { return cursorTokenOf(false) }
 
 // cursorTokenOf is readCursorToken, fresh from the Keychain when asked.
 func cursorTokenOf(fresh bool) string {
+	if settings.AccountDiscoveryOff() {
+		return ""
+	}
 	if runtime.GOOS == "darwin" {
 		if t := cursorKeychainToken(fresh); t != "" {
 			return t
 		}
 	}
-	b, err := os.ReadFile(cursorAuthFile())
+	b, err := readAccountFile(cursorAuthFile())
 	if err != nil {
 		return ""
 	}

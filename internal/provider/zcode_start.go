@@ -273,6 +273,10 @@ func zcodeTimezone() string {
 	return "UTC"
 }
 
+// zcodeClock is the time a Start Plan request's context prefix gives the
+// day of (zcodeDateReminder); tests set it.
+var zcodeClock = time.Now
+
 // zcodeStartRequest makes req, a request to the Start Plan, ZCode's own:
 // its headers, and a model request's body shaped as ZCode's
 // (zcodeStartBody) for an account on base.
@@ -281,7 +285,7 @@ func zcodeStartRequest(req *http.Request, base string, body []byte) {
 	if len(body) == 0 || !strings.HasSuffix(req.URL.Path, "/v1/messages") {
 		return
 	}
-	nb := zcodeStartBody(body, zcodeStartProvider(base), time.Now())
+	nb := zcodeStartBody(body, zcodeStartProvider(base), zcodeClock())
 	req.Body = io.NopCloser(bytes.NewReader(nb))
 	req.ContentLength = int64(len(nb))
 	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(nb)), nil }
@@ -506,7 +510,10 @@ func zcodeStartQuota(ctx context.Context, l Login, jwt string) SubscriptionQuota
 			used = total - left
 		}
 		if hasTotal && total > 0 {
+			// the bucket's count as amount of limit (#659): the card says it
+			// as used or as left, as it says the share beside it
 			w.Used = 100 * used / total
+			w.Amount, w.Limit = used, total
 			w.Display = fmt.Sprintf("%s / %s", compactNumber(used), compactNumber(total))
 		}
 		if t, ok := zcodeNum(x.ExpiresAt); ok && t > 0 {

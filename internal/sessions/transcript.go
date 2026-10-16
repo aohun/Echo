@@ -13,8 +13,10 @@ import (
 
 // Transcript is what was said in a session, in the order it was said.
 type Transcript struct {
-	Parts []Part `json:"parts"`
-	Cut   bool   `json:"cut,omitempty"` // there was more than is kept here
+	Parts    []Part `json:"parts"`
+	Cut      bool   `json:"cut,omitempty"` // there was more than is kept here
+	Source   string `json:"source,omitempty"`
+	Captured int    `json:"captured,omitempty"`
 }
 
 // transcriptMax is the characters of all of a transcript's parts.
@@ -28,7 +30,7 @@ var ErrNoTranscript = errors.New("this agent's conversations can't be shown")
 // transcript.
 func HasTranscript(agent string) bool {
 	switch agent {
-	case "claude", "qoder", "qoder-cn", "codex", "pi", "omp":
+	case "claude", "qoder", "qoder-cn", "codex", "pi", "omp", "cursor", "opencode", "kimi":
 		return true
 	}
 	return false
@@ -55,17 +57,34 @@ func TranscriptOf(s Session) (Transcript, error) {
 	if !HasTranscript(s.Agent) || s.Path == "" {
 		return out, ErrNoTranscript
 	}
+	return out, readTranscript(s, out.add)
+}
+
+// readTranscript tells add each part of a session's conversation, in order,
+// as its agent's file has it.
+func readTranscript(s Session, add func(bool, Part) bool) error {
+	return readTranscriptOf(s, nil, add)
+}
+
+// readTranscriptOf is readTranscript decoding only the lines keep says yes
+// to, where a line stands alone (Claude's, Codex's, Kimi's); Pi's lines are a tree,
+// read whole.
+func readTranscriptOf(s Session, keep func([]byte) bool, add func(bool, Part) bool) error {
 	whole := Call{Agent: s.Agent, File: s.Path, To: math.MaxInt64}
-	var err error
 	switch s.Agent {
+	case "opencode":
+		return openCodeTranscript(s, add)
+	case "cursor":
+		return cursorTranscript(s.Path, add)
 	case "codex":
-		err = codexContent(whole, out.add)
+		return codexContentOf(whole, keep, add)
 	case "pi", "omp":
-		err = piTranscript(s.Path, out.add)
+		return piTranscript(s.Path, add)
+	case "kimi":
+		return kimiTranscript(s.Path, keep, add)
 	default:
-		err = claudeContent(whole, out.add)
+		return claudeContentOf(whole, keep, add)
 	}
-	return out, err
 }
 
 // piEntry is a line of a Pi (or oh-my-pi) session: an entry of its tree.
@@ -77,6 +96,7 @@ type piEntry struct {
 	Message  *struct {
 		Role     string          `json:"role"`
 		ToolName string          `json:"toolName"`
+		Model    string          `json:"model"` // an assistant's: the one it was answered by (#2253)
 		Content  json.RawMessage `json:"content"`
 	} `json:"message"`
 }
@@ -115,6 +135,9 @@ func piTranscript(path string, add func(bool, Part) bool) error {
 	}
 	for i := len(branch) - 1; i >= 0; i-- {
 		for _, p := range piParts(branch[i]) {
+			if p.Role == "assistant" && branch[i].Message != nil {
+				p.Model = branch[i].Message.Model
+			}
 			if !add(p.Role != "assistant", p) {
 				return nil
 			}

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"github.com/tidwall/jsonc"
 
 	"github.com/yetone/magpie/internal/agentenv"
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 // sandbox is a home with every agent magpie can give the library to, and
@@ -32,9 +34,20 @@ func sandbox(t *testing.T) string {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
 	// Gemini CLI is found by its binary alone
 	bin := filepath.Join(h, "bin")
-	write(t, filepath.Join(bin, "gemini"), "#!/bin/sh\n")
-	os.Chmod(filepath.Join(bin, "gemini"), 0o755)
+	testenv.Program(t, filepath.Join(bin, "gemini"), "#!/bin/sh\n")
 	write(t, filepath.Join(bin, "gemini.exe"), "")
+	// the other fixture agents' CLIs beside their folders, as on a machine
+	// where they are really installed: with the folder alone each would be
+	// gone (CLIMissing, #2177) and no target of the library's. Only these:
+	// a stand-in for an agent no folder here keeps would have it detected
+	// by its binary alone in every test.
+	for _, name := range []string{
+		"claude", "codex", "opencode", "mimo", "deveco", "pi", "goose",
+		"cursor-agent", "copilot", "crush", "dsh",
+	} {
+		testenv.Program(t, filepath.Join(bin, name), "#!/bin/sh\n")
+		write(t, filepath.Join(bin, name+".exe"), "")
+	}
 	t.Setenv("PATH", bin)
 	// never the machine's global node_modules
 	roots := piGlobalRoots
@@ -55,7 +68,7 @@ func sandbox(t *testing.T) string {
 	}
 	for _, f := range []string{
 		".claude/settings.json", ".codex/config.toml", ".gemini/settings.json",
-		".config/opencode/opencode.json", ".config/mimocode/mimocode.json", ".pi/agent/settings.json", ".config/goose/config.yaml",
+		".config/opencode/opencode.json", ".config/mimocode/mimocode.json", ".config/deveco/deveco.jsonc", ".pi/agent/settings.json", ".config/goose/config.yaml",
 		".cursor/cli-config.json", ".copilot/settings.json", ".config/crush/crush.json", ".dsh/profiles/web/cordis.patch.yml",
 	} {
 		write(t, filepath.Join(h, f), "")
@@ -71,6 +84,19 @@ func write(t *testing.T, p, s string) {
 	if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// holdCLI puts a CLI of the given name in the sandbox's bin, beside the
+// agent folder the test wrote: the folder alone is an uninstall that left
+// it behind (#2177), and no target of the library's. An empty name is
+// nothing, for an agent with no install command, which is never gone.
+func holdCLI(t *testing.T, h, bin string) {
+	t.Helper()
+	if bin == "" {
+		return
+	}
+	testenv.Program(t, filepath.Join(h, "bin", bin), "#!/bin/sh\n")
+	write(t, filepath.Join(h, "bin", bin+".exe"), "")
 }
 
 func read(t *testing.T, p string) string {
@@ -107,7 +133,7 @@ func ids(ts []*Target) []string {
 func TestTargets(t *testing.T) {
 	sandbox(t)
 	got := ids(Targets())
-	for _, id := range []string{"claude", "codex", "gemini", "opencode", "mimocode", "pi", "goose", "cursor", "copilot", "crush", "dsh"} {
+	for _, id := range []string{"claude", "codex", "gemini", "opencode", "mimocode", "deveco", "pi", "goose", "cursor", "copilot", "crush", "dsh"} {
 		if !slices.Contains(got, id) {
 			t.Errorf("%s not a target: %v", id, got)
 		}
@@ -132,18 +158,121 @@ func TestCrushInstructionsWhereCrushReadsThem(t *testing.T) {
 	}
 }
 
-// Alma takes skills, in ~/.config/alma/skills (#824), but has no
-// user-wide place for instructions or MCP servers, and the library says so
-// rather than recording it as given any.
-func TestTakesRefusesAlma(t *testing.T) {
+// Alma takes skills, in ~/.config/alma/skills (#824), MCP servers, in
+// ~/.config/alma/mcp.json (#1292), and instructions, in
+// ~/.config/alma/USER.md, which its main chat reads into its system
+// prompt (#2315).
+func TestTakesAlma(t *testing.T) {
 	sandbox(t)
-	for _, kind := range []string{"instructions", "mcp"} {
-		if id, err := Takes("alma", kind); err == nil || !strings.Contains(err.Error(), "Alma has no user-wide place") {
+	for _, kind := range []string{"instructions", "skills", "mcp"} {
+		if id, err := Takes("alma", kind); err != nil || id != "alma" {
 			t.Errorf("%s: %q %v", kind, id, err)
 		}
 	}
-	if id, err := Takes("alma", "skills"); err != nil || id != "alma" {
-		t.Errorf("skills: %q %v", id, err)
+}
+
+// almaHere makes Alma's data folder, which is what has it detected, and
+// returns its USER.md.
+func almaHere(t *testing.T, h string) string {
+	t.Helper()
+	t.Setenv("APPDATA", filepath.Join(h, "AppData", "Roaming"))
+	cfg, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Join(cfg, "alma"), 0o755)
+	return filepath.Join(h, ".config", "alma", "USER.md")
+}
+
+// almaFront is how Alma reads its owner from USER.md (getOwnerInfo in
+// 0.4.164's out/main/index.js): the YAML front matter, from the file's
+// first line, unanchored otherwise.
+var almaFront = regexp.MustCompile(`^---\n([\s\S]*?)\n---`)
+
+// Jie211's USER.md, as Alma's own setup writes one, keeps its front matter
+// first and its profile whole when Alma is given the shared instructions:
+// magpie's part goes after it, and turning Alma off leaves the file as it
+// was (#2315).
+func TestAlmaInstructionsKeepTheProfile(t *testing.T) {
+	h := sandbox(t)
+	user := almaHere(t, h)
+	if tg := targetByID("alma"); tg == nil || tg.Instructions != user || !tg.Profile {
+		t.Fatalf("alma: %+v", tg)
+	}
+	mine := "---\nname: \"Jie\"\ntelegram_id: \"123456789\"\ndiscord_id: \"\"\n---\n# About My Human\n- Name: Jie\n- Language: 中文\n"
+	write(t, user, mine)
+	shared := "交流用中文，代码注释和文档默认用英文。"
+	ok(t)(SaveInstructions(InstructionsChange{Shared: &shared, Agents: []string{"alma"}}))
+	got := read(t, user)
+	if want := mine + "\n" + blockBegin + "\n" + shared + "\n" + blockEnd + "\n"; got != want {
+		t.Errorf("USER.md:\n%q\nwant\n%q", got, want)
+	}
+	if m := almaFront.FindStringSubmatch(got); m == nil || !strings.Contains(m[1], `telegram_id: "123456789"`) {
+		t.Errorf("Alma no longer reads its owner from USER.md:\n%s", got)
+	}
+	ok(t)(SaveInstructions(InstructionsChange{Agents: []string{}}))
+	if got := read(t, user); got != mine {
+		t.Errorf("USER.md after Alma is off:\n%q", got)
+	}
+}
+
+// Alma with no USER.md gets one with magpie's part alone, taken away again
+// when Alma is turned off.
+func TestAlmaInstructionsWithoutUserMD(t *testing.T) {
+	h := sandbox(t)
+	user := almaHere(t, h)
+	shared := "Reply in English."
+	ok(t)(SaveInstructions(InstructionsChange{Shared: &shared, Agents: []string{"alma"}}))
+	if got := read(t, user); got != blockBegin+"\n"+shared+"\n"+blockEnd+"\n" {
+		t.Errorf("USER.md:\n%q", got)
+	}
+	ok(t)(SaveInstructions(InstructionsChange{Agents: []string{}}))
+	if _, err := os.Stat(user); !os.IsNotExist(err) {
+		t.Errorf("USER.md left behind: %v", err)
+	}
+}
+
+// Moving Alma's own lines into the shared text would take its owner's
+// profile out of USER.md, and the telegram_id Alma knows its owner by,
+// into every agent's file: it is refused and nothing changes (#2315).
+func TestAlmaProfileIsNotImported(t *testing.T) {
+	h := sandbox(t)
+	user := almaHere(t, h)
+	mine := "---\nname: \"Jie\"\ntelegram_id: \"123456789\"\n---\n# About My Human\n- Name: Jie\n"
+	write(t, user, mine)
+	if _, err := ImportInstructions("alma"); err == nil || !strings.Contains(err.Error(), "profile") {
+		t.Errorf("import: %v", err)
+	}
+	if got := read(t, user); got != mine {
+		t.Errorf("USER.md:\n%q", got)
+	}
+	v, err := ReadInstructions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Shared != "" {
+		t.Errorf("shared text: %q", v.Shared)
+	}
+	i := slices.IndexFunc(v.Agents, func(a AgentInstructions) bool { return a.Agent == "alma" })
+	if i < 0 || !v.Agents[i].Profile || v.Agents[i].On {
+		t.Errorf("alma on the page: %+v", v.Agents)
+	}
+}
+
+// Claude Desktop keeps its instructions in its own settings and OpenChamber
+// reads OpenCode's: the refusal says where they go instead, and lists the
+// agents here that take that kind (MOMO on Discord: "has no user-wide
+// place" said neither).
+func TestTakesSaysWhereInstead(t *testing.T) {
+	sandbox(t)
+	_, err := Takes("claude-desktop", "instructions")
+	if err == nil || !strings.Contains(err.Error(), "give them to claude") || !strings.Contains(err.Error(), "agents here that take instructions: ") || !strings.Contains(err.Error(), "gemini") {
+		t.Errorf("claude-desktop instructions: %v", err)
+	}
+	for _, kind := range []string{"instructions", "mcp", "skills"} {
+		if _, err := Takes("openchamber", kind); err == nil || !strings.Contains(err.Error(), "give them to opencode") {
+			t.Errorf("openchamber %s: %v", kind, err)
+		}
 	}
 }
 
@@ -345,6 +474,123 @@ source = "local"
 	}
 }
 
+// Every key Codex reads for a server (codex-rs/config/src/mcp_types.rs,
+// RawMcpServerConfig) is as the user wrote it after the server is taken
+// into the library and saved again for Codex and Claude Code: the value and
+// its TOML type, a float written as one among them.
+func TestCodexServerKeysSurviveTheLibrary(t *testing.T) {
+	h := sandbox(t)
+	cfg := filepath.Join(h, ".codex/config.toml")
+	write(t, cfg, `model = "gpt-5"
+
+[mcp_servers.inner]
+command = "node"
+args = ["/srv/mcp.js", "--tool-args", "{\"strict\":true}", "a b"]
+cwd = "/srv"
+env_vars = ["HOME", { name = "TOKEN", source = "local" }]
+startup_timeout_sec = 20.5
+startup_timeout_ms = 30000
+tool_timeout_sec = 120.0
+enabled = true
+required = false
+supports_parallel_tool_calls = true
+tool_input_schema_max_bytes = 50000
+default_tools_approval_mode = "approve"
+enabled_tools = ["search", "fetch"]
+disabled_tools = ["drop"]
+startup_readiness = "cached"
+omit_tools_from = ["code_mode"]
+environment_id = "local"
+name = "Inner"
+
+[mcp_servers.inner.env]
+API_KEY = "k"
+PORT = "8080"
+
+[mcp_servers.inner.tools.search]
+approval_mode = "approve"
+output_token_limit = 4000
+
+[mcp_servers.web]
+url = "https://x.example/mcp"
+bearer_token = "b"
+bearer_token_env_var = "WEB_TOKEN"
+http_headers = { "X-Team" = "a" }
+env_http_headers = { "X-Key" = "WEB_KEY" }
+http_headers_helper = "/bin/helper"
+auth = "oauth"
+scopes = ["read", "write"]
+oauth_resource = "https://x.example"
+startup_timeout_sec = 1e1
+
+[mcp_servers.web.oauth]
+client_id = "cid"
+client_secret = "s"
+callback_url = "http://127.0.0.1:8765/cb"
+callback_port = 8765
+authorization_server_issuer = "https://id.example"
+`)
+	f := &mcpFile{Path: cfg, Format: fmtCodex}
+	before, err := f.entries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok(t)(ImportServer("inner"))
+	ok(t)(ImportServer("web"))
+	l, err := load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"inner", "web"} {
+		s := *l.server(name)
+		if !s.Remote() {
+			s.Args = append(slices.Clone(s.Args), "--more")
+		}
+		s.Agents = []string{"claude", "codex"}
+		ok(t)(SaveServer(name, s))
+	}
+	after, err := f.entries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, m := range before {
+		for k, v := range m {
+			if k == "args" {
+				continue
+			}
+			if got := after[name][k]; !reflect.DeepEqual(got, v) {
+				t.Errorf("%s.%s: %#v (%T) came back %#v (%T)", name, k, v, v, got, got)
+			}
+		}
+	}
+	if a := after["inner"]["args"]; !reflect.DeepEqual(a, []any{"/srv/mcp.js", "--tool-args", `{"strict":true}`, "a b", "--more"}) {
+		t.Errorf("args: %#v", a)
+	}
+	if t.Failed() {
+		t.Log(read(t, cfg))
+	}
+}
+
+// What a TOML value magpie keeps reads back as the same value and type.
+func TestTOMLValueKeepsTypes(t *testing.T) {
+	src := "f = 120.0\ng = 1e21\nh = -0.5\ni = 7\nd = 2026-10-06\nlt = 07:32:00.5\nldt = 2026-10-06T07:32:00\nodt = 2026-10-06T07:32:00.123+08:00\ninf = inf\n"
+	var want map[string]any
+	if err := toml.Unmarshal([]byte(src), &want); err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	for _, k := range slices.Sorted(maps.Keys(want)) {
+		b.WriteString(k + " = " + tomlValue(want[k]) + "\n")
+	}
+	var got map[string]any
+	if err := toml.Unmarshal([]byte(b.String()), &got); err != nil {
+		t.Fatalf("%v\n%s", err, b.String())
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v\nwant %#v\n%s", got, want, b.String())
+	}
+}
+
 func TestServerRenameAndAgents(t *testing.T) {
 	h := sandbox(t)
 	ok(t)(SaveServer("", Server{Name: "a", Transport: "stdio", Command: "x", Agents: []string{"claude", "cursor"}}))
@@ -464,6 +710,51 @@ func TestInstructions(t *testing.T) {
 	}
 	if es, _ := os.ReadDir(BackupDir()); len(es) == 0 {
 		t.Error("nothing was backed up")
+	}
+}
+
+// TestInstructionsSetLinkedToAgentsFile is #2349: instructions.md linked to
+// the file Claude Code reads. The set was read with magpie's part in it, so
+// each sync wrote the whole file into its own part again and it doubled.
+func TestInstructionsSetLinkedToAgentsFile(t *testing.T) {
+	h := sandbox(t)
+	cl := filepath.Join(h, ".claude/CLAUDE.md")
+	write(t, cl, "# Mine\n\nBe brief.\n")
+	set := filepath.Join(Dir(), "instructions.md")
+	if err := os.MkdirAll(filepath.Dir(set), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(cl, set); err != nil {
+		t.Skip("no symlinks here:", err)
+	}
+	ok(t)(SaveInstructions(InstructionsChange{Agents: []string{"claude", "codex"}}))
+	for range 3 {
+		ok(t)(Sync())
+	}
+	if s := read(t, cl); s != "# Mine\n\nBe brief.\n" {
+		t.Errorf("claude's file, the set's own, was written into:\n%q", s)
+	}
+	cx := filepath.Join(h, ".codex/AGENTS.md")
+	if s := read(t, cx); s != blockBegin+"\n# Mine\n\nBe brief.\n"+blockEnd+"\n" {
+		t.Errorf("codex:\n%q", s)
+	}
+	iv, _ := ReadInstructions()
+	if iv.Shared != "# Mine\n\nBe brief." {
+		t.Errorf("shared: %q", iv.Shared)
+	}
+
+	// a file grown before: every part magpie wrote into itself comes out
+	grown := "# Mine\n\nBe brief.\n"
+	for range 4 {
+		grown = withBlock(grown, strings.TrimSpace(grown))
+	}
+	write(t, cl, grown)
+	ok(t)(Sync())
+	if s := read(t, cl); s != "# Mine\n\nBe brief.\n" {
+		t.Errorf("grown file after a sync:\n%q", s)
+	}
+	if s := read(t, cx); s != blockBegin+"\n# Mine\n\nBe brief.\n"+blockEnd+"\n" {
+		t.Errorf("codex after:\n%q", s)
 	}
 }
 
@@ -633,7 +924,7 @@ func TestSkillsFromGitHub(t *testing.T) {
 		t.Error("the tarball wrote outside its folder")
 	}
 	version = "two"
-	ok(t)(UpdateSkill("pdf"))
+	ok(t)(UpdateSkill("pdf", false))
 	v, _ := Read(nil)
 	if v.Skills[0].Description != "PDFs two" || v.Skills[0].Source != in+"/pdf" {
 		t.Errorf("after update: %+v", v.Skills[0])
@@ -641,8 +932,9 @@ func TestSkillsFromGitHub(t *testing.T) {
 	if !ours(filepath.Join(h, ".claude/skills/pdf"), "pdf") {
 		t.Error("claude's link went in the update")
 	}
-	if _, err := InstallSkills(in, []string{"skills/pdf"}, nil); err == nil {
-		t.Error("installed twice")
+	// installed again, it is had already: not copied a second time
+	if r := ok(t)(InstallSkills(in, []string{"skills/pdf"}, nil)); len(r.Installed) != 0 || !slices.Equal(r.Had, []string{"pdf"}) {
+		t.Errorf("installed twice: %v, had %v", r.Installed, r.Had)
 	}
 }
 
@@ -739,6 +1031,7 @@ func TestReadNoAgents(t *testing.T) {
 func TestPiMCP(t *testing.T) {
 	h := sandbox(t)
 	p := filepath.Join(h, ".pi/agent/mcp.json")
+	write(t, filepath.Join(h, ".pi/agent/settings.json"), `{"packages": ["npm:pi-mcp-adapter@2.9.1"]}`)
 	write(t, p, `{"mcpServers": {"supabase": {"transport": "streamable-http", "url": "https://mcp.supabase.com/mcp", "lifecycle": "eager"}}}`)
 	tg := targetByID("pi")
 	if tg == nil || tg.MCP == nil || tg.MCP.Path != p {
@@ -773,6 +1066,7 @@ func TestPiMCPAdapter3(t *testing.T) {
 	d := filepath.Join(h, ".pi/agent")
 	old, adapter := filepath.Join(d, "mcp.json"), filepath.Join(d, "mcp-adapter.json")
 	pkg := filepath.Join(d, "npm/node_modules/pi-mcp-adapter/package.json")
+	write(t, filepath.Join(d, "settings.json"), `{"packages": ["npm:pi-mcp-adapter"]}`)
 	write(t, old, `{"mcpServers": {"mine": {"command": "npx", "args": ["x"]}}}`)
 	write(t, pkg, `{"name": "pi-mcp-adapter", "version": "2.9.1"}`)
 	if tg := targetByID("pi"); tg.MCP.Path != old {
@@ -1048,10 +1342,16 @@ func TestDshServerName(t *testing.T) {
 func TestDshImportKeepsJS(t *testing.T) {
 	h := sandbox(t)
 	p := filepath.Join(h, ".dsh/profiles/web/cordis.patch.yml")
-	write(t, p, "- insert:\n    - id: mcp-engram\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: engram\n        transport: stdio\n        command: engram\n        cwd: !!js process.cwd()\n        env:\n          HOME: !!js process.env.HOME\n")
+	write(t, p, "- insert:\n    - id: mcp-engram\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: engram\n        transport: stdio\n        command: engram\n        cwd: !!js process.cwd()\n        env:\n          HOME: !!js require('os').homedir()\n")
 	v, _ := Read(nil)
 	if len(v.FoundServers) != 0 {
 		t.Errorf("an env dsh works out read as a server: %+v", v.FoundServers)
+	}
+	// a variable read whole is the library's reference (#1435)
+	write(t, p, "- insert:\n    - id: mcp-engram\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: engram\n        transport: stdio\n        command: engram\n        cwd: !!js process.cwd()\n        env:\n          HOME: !!js process.env.HOME\n")
+	v, _ = Read(nil)
+	if len(v.FoundServers) != 1 || v.FoundServers[0].Server.Env["HOME"] != "${HOME}" {
+		t.Errorf("found: %+v", v.FoundServers)
 	}
 	write(t, p, "- insert:\n    - id: mcp-engram\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: engram\n        transport: stdio\n        command: engram\n        cwd: !!js process.cwd()\n")
 	ok(t)(ImportServer("engram"))

@@ -11,13 +11,16 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, settingsDrawn, openPart } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
 const words = {
   en: { row: "Download source", use: "Use a mirror…", save: "Save", github: "Use GitHub", change: "Change", bad: "full https:// address",
+    tip: "a file from the mirror that doesn't match it is not installed",
     viaGitHub: "downloaded from GitHub", viaMirror: "through this mirror", failed: "through the mirror", official: "Download from GitHub" },
   zh: { row: "下载源", use: "使用镜像…", save: "保存", github: "恢复官方", change: "修改", bad: "完整的 https:// 地址",
+    tip: "从镜像下载的文件如果与校验和不符，magpie 不会安装它",
     viaGitHub: "从官方 GitHub 下载", viaMirror: "经此镜像下载", failed: "经镜像", official: "改用官方下载" },
 };
 
@@ -72,8 +75,10 @@ async function open(browser, lang, ctl, errors) {
   page.setDefaultTimeout(5000);
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route("**/*", server(lang, ctl));
+  await watchSettingsReads(page);
   await page.goto("http://magpie.test/?view=settings");
-  await page.locator("#setTab-about").click();
+  await settingsDrawn(page); // rows found are the ones that stay (#1659)
+  await openPart(page, "about");
   await page.locator("#setPage-about").waitFor({ state: "visible" });
   const row = page.locator("#about .row.pref.update-mirror-row");
   await row.waitFor();
@@ -100,6 +105,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal((await row.locator(".name").innerText()).trim(), w.row);
         await row.locator(".sub", { hasText: w.viaGitHub }).waitFor();
         assert.equal((await row.locator("code").innerText()).trim(), "GitHub");
+        // the tooltip's second half reads as a sentence (AlwaySleepyZzz on Discord)
+        assert.ok((await row.locator(".sub").getAttribute("title")).includes(w.tip), "the tooltip says a mismatched mirror file is not installed");
         assert.equal(await page.locator("#about select").count(), 0, "no native select");
         const widths = await row.evaluate((e) => [e, ...e.querySelectorAll("*")].map((x) => parseFloat(getComputedStyle(x).borderLeftWidth) || 0));
         assert.ok(widths.every((x) => x === 0), "no left border");

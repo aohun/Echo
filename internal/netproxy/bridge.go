@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -38,9 +39,25 @@ func Bridge(socks *url.URL) (string, error) {
 	if a, ok := bridges[key]; ok {
 		return a, nil
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := listenLoopback()
 	if err != nil {
 		return "", err
+	}
+	// A port just let go can be handed out again at once. A bridge given
+	// the port of the SOCKS proxy it carries to (one on loopback that is
+	// down) would dial itself and hold each request until its deadline, so
+	// it listens again while still holding that port.
+	for tries := 0; carriesToItself(ln.Addr(), socks); tries++ {
+		held := ln
+		if tries == 3 {
+			held.Close()
+			return "", fmt.Errorf("no loopback port apart from the SOCKS proxy's %s", socks.Host)
+		}
+		ln, err = listenLoopback()
+		held.Close()
+		if err != nil {
+			return "", err
+		}
 	}
 	s := *socks
 	go func() {
@@ -55,6 +72,24 @@ func Bridge(socks *url.URL) (string, error) {
 	a := "http://" + ln.Addr().String()
 	bridges[key] = a
 	return a, nil
+}
+
+// listenLoopback is where a bridge listens; a test hands out a chosen port.
+var listenLoopback = func() (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") }
+
+// carriesToItself is whether a bridge at a would carry to its own address:
+// the SOCKS proxy is on this computer at the same port.
+func carriesToItself(a net.Addr, socks *url.URL) bool {
+	ta, ok := a.(*net.TCPAddr)
+	if !ok || socks.Port() != strconv.Itoa(ta.Port) {
+		return false
+	}
+	h := socks.Hostname()
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
 }
 
 // bridgeConn serves one client of a bridge: a CONNECT is tunnelled, a
@@ -263,4 +298,24 @@ func ForBun(proxy string) string {
 		return a
 	}
 	return proxy
+}
+
+// EnvForBun is env for a bun that magpie starts (bun add, update, remove,
+// run, or an agent CLI's bun add -g): its *_PROXY with a SOCKS5 one
+// bridged (ForBun). Bun takes only http:// and https:// proxies, and with
+// a socks5:// one every registry fetch failed as UnsupportedProxyProtocol
+// (#1409), which a Mac with only a SOCKS system proxy hands it through Env.
+func EnvForBun(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		k, v, _ := strings.Cut(e, "=")
+		switch strings.ToUpper(k) {
+		case "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY":
+			if v = strings.TrimSpace(v); v != "" {
+				e = k + "=" + ForBun(v)
+			}
+		}
+		out = append(out, e)
+	}
+	return out
 }

@@ -9,10 +9,12 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // fakeSOCKS is a SOCKS5 proxy taking user u and password pw ("" for none),
@@ -164,6 +166,46 @@ func TestBridgeSaysTheProxyIsDown(t *testing.T) {
 	}
 }
 
+// A bridge handed the port of the SOCKS proxy it carries to, which a port
+// just let go can be (Linux CI gave TestPluginSOCKSProxy's dead proxy port
+// to its bridge), listens elsewhere: carrying to itself, it held each
+// request for a minute instead of saying the proxy is down.
+func TestBridgeNeverCarriesToItself(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := ln.Addr().String()
+	ln.Close()
+	first := true
+	listenLoopback = func() (net.Listener, error) {
+		if first {
+			first = false
+			return net.Listen("tcp", addr)
+		}
+		return net.Listen("tcp", "127.0.0.1:0")
+	}
+	t.Cleanup(func() { listenLoopback = func() (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") } })
+	for _, host := range []string{addr, "localhost:" + strings.Split(addr, ":")[1]} {
+		b, err := Bridge(&url.URL{Scheme: "socks5h", Host: host})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimPrefix(b, "http://") == addr {
+			t.Fatalf("the bridge for %s listens at %s, the proxy's own port", host, b)
+		}
+		c, err := net.Dial("tcp", strings.TrimPrefix(b, "http://"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.SetDeadline(time.Now().Add(10 * time.Second))
+		io.WriteString(c, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+		got, _ := io.ReadAll(c)
+		c.Close()
+		if !strings.HasPrefix(string(got), "HTTP/1.1 502") {
+			t.Fatalf("through %s: answered %q", host, got)
+		}
+		first = true
+	}
+}
+
 // Bun itself, the plugin host's runtime, fetches through the bridge: run
 // when a bun is at hand ($MAGPIE_BUN or on PATH).
 func TestBunThroughBridge(t *testing.T) {
@@ -191,5 +233,50 @@ func TestBunThroughBridge(t *testing.T) {
 	}
 	if n.Load() != 2 {
 		t.Fatalf("the SOCKS proxy carried %d connections, want 2", n.Load())
+	}
+}
+
+// A Mac with only a SOCKS system proxy (#1409): what Env gives a bun
+// names the bridge in front of it, so bun add doesn't fail as
+// UnsupportedProxyProtocol, and the bridge carries through the SOCKS
+// proxy. An http:// proxy, and the rest of env, are left as they are.
+func TestEnvForBunBridgesSystemSOCKS(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	socks, n := fakeSOCKS(t, "", "")
+	sysCache.at, sysCache.p = farFuture, Proxy{URL: socks.String()}
+	t.Cleanup(func() { sysCache.at = zero })
+
+	env := EnvForBun(Env([]string{"PATH=/bin", "HOME=/h"}))
+	var bridge string
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		switch strings.ToUpper(k) {
+		case "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY":
+			if !strings.HasPrefix(v, "http://127.0.0.1:") || (bridge != "" && v != bridge) {
+				t.Fatalf("bun is given %s", kv)
+			}
+			bridge = v
+		}
+	}
+	if bridge == "" || !slices.Contains(env, "PATH=/bin") || !slices.Contains(env, "HOME=/h") {
+		t.Fatalf("env: %q", env)
+	}
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") }))
+	defer plain.Close()
+	pu, _ := url.Parse(bridge)
+	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pu)}}
+	res, err := c.Get(plain.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if string(b) != "ok" || n.Load() != 1 {
+		t.Fatalf("through the bridge: %q, the SOCKS proxy carried %d", b, n.Load())
+	}
+
+	httpEnv := []string{"HTTPS_PROXY=http://127.0.0.1:7890", "all_proxy=", "NO_PROXY=localhost"}
+	if got := EnvForBun(httpEnv); strings.Join(got, "\n") != strings.Join(httpEnv, "\n") {
+		t.Fatalf("an http proxy: %q", got)
 	}
 }

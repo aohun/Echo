@@ -157,7 +157,33 @@ func link(p, name string) error {
 		os.RemoveAll(p)
 		return err
 	}
-	return os.WriteFile(filepath.Join(p, marker), []byte("copied from "+skillDir(name)+"\n"), 0o644)
+	return markCopy(p, "copied from "+skillDir(name)+"\n")
+}
+
+// markCopy writes magpie's mark into a copy just made at p: what it says,
+// then the hash of what was copied. A sync tells a copy is still the
+// library's skill by that hash and the mark's time (copyIsFresh), without
+// reading every file of every copy each time (#1031).
+func markCopy(p, says string) error {
+	h := hashDir(p)
+	if h != "" {
+		says += "hash " + h + "\n"
+	}
+	return os.WriteFile(filepath.Join(p, marker), []byte(says), 0o644)
+}
+
+// markedHash is the hash magpie's mark at p says was copied, if it says one.
+func markedHash(p string) (string, bool) {
+	b, err := os.ReadFile(filepath.Join(p, marker))
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if h, ok := strings.CutPrefix(strings.TrimSpace(line), "hash "); ok && h != "" {
+			return h, true
+		}
+	}
+	return "", false
 }
 
 // copyIn puts a copy of the library's skill at p, marked as magpie's, in
@@ -176,7 +202,7 @@ func copyIn(p, name string) error {
 		os.RemoveAll(next)
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(next, marker), []byte("copied from "+lib+" by magpie, and copied again when it changes\n"), 0o644); err != nil {
+	if err := markCopy(next, "copied from "+lib+" by magpie, and copied again when it changes\n"); err != nil {
 		os.RemoveAll(next)
 		return err
 	}
@@ -257,11 +283,46 @@ func isDigits(s string) bool {
 	return true
 }
 
-// fresh is whether both folders could be read and the copy at p holds
-// what the library's skill does. Failed hashes don't prove it can be discarded.
-func fresh(p, name string) bool {
+// copyIsFresh is whether the copy at p holds the skill hashed as lib.
+// A mark matching lib, with nothing changed since it was made, establishes
+// that without reading the files (#1031). A copy takeEdits found unchanged
+// (untouched) isn't walked again. An incomplete scan returns an error.
+func copyIsFresh(p, lib string, untouched bool) (bool, error) {
+	var at time.Time
+	if !untouched {
+		var err error
+		at, err = changedAt(p)
+		if err != nil {
+			return false, err
+		}
+	}
+	if lib == "" {
+		return false, nil
+	}
+	if h, ok := markedHash(p); ok {
+		if untouched {
+			return h == lib, nil
+		}
+		if made, ok := copiedAt(p); ok && !at.After(made) {
+			return h == lib, nil
+		}
+	}
 	h := hashDir(p)
-	return h != "" && h == hashDir(realDir(skillDir(name)))
+	return h != "" && h == lib, nil
+}
+
+// libHash is hashDir of the library's skill by that name, read once for
+// a change rather than once for each agent given it.
+func (l *Library) libHash(name string) string {
+	if h, ok := l.hashes[name]; ok {
+		return h
+	}
+	h := hashDir(realDir(skillDir(name)))
+	if l.hashes == nil {
+		l.hashes = map[string]string{}
+	}
+	l.hashes[name] = h
+	return h
 }
 
 func unlink(p string) error {
@@ -321,13 +382,17 @@ func resolve(p string, depth int) (string, bool) {
 		if cur != "" {
 			next = filepath.Join(cur, part)
 		}
-		if to, ok := linkTarget(next); ok {
+		// one look at each part: whether it is there, and where it points
+		// when it is a link (#1771)
+		e := lookPart(next)
+		if e.link {
+			to := e.to
 			if !filepath.IsAbs(to) {
 				to = filepath.Join(filepath.Dir(next), to)
 			}
 			return resolve(filepath.Join(append([]string{to}, parts[i+1:]...)...), depth+1)
 		}
-		if _, err := os.Lstat(next); err != nil {
+		if !e.there {
 			return "", false
 		}
 		cur = next
@@ -342,18 +407,8 @@ func resolve(p string, depth int) (string, bool) {
 // or on Windows a junction (a mount point, which Go since 1.23 reports as
 // irregular, not as a symlink).
 func linkTarget(p string) (string, bool) {
-	fi, err := os.Lstat(p)
-	if err != nil {
-		return "", false
-	}
-	if !linkEntry(fi) {
-		return "", false
-	}
-	to, err := os.Readlink(p)
-	if err != nil || to == "" {
-		return "", false
-	}
-	return to, true
+	e := lookPart(p)
+	return e.to, e.link
 }
 
 // linkEntry is whether the entry is a link rather than a folder of its own:
@@ -442,6 +497,10 @@ func (l *Library) syncSkills(t *Target, res *Result, all []*Target) {
 	for _, name := range a.Skills {
 		s := l.skill(name)
 		p := filepath.Join(t.Skills, name)
+		if l.blockedSkills[realDir(p)] {
+			mine = append(mine, name)
+			continue
+		}
 		if wanted(s) && !inShared(s) || !ours(p, name) {
 			continue
 		}
@@ -457,7 +516,21 @@ func (l *Library) syncSkills(t *Target, res *Result, all []*Target) {
 		if !slices.Contains(s.Agents, id) {
 			continue
 		}
+		// an agent gone from here is given nothing: what it has still
+		// stays its, until unticked
+		if t.Gone {
+			if slices.Contains(a.Skills, s.Name) && !slices.Contains(mine, s.Name) {
+				mine = append(mine, s.Name)
+			}
+			continue
+		}
 		p := filepath.Join(t.Skills, s.Name)
+		if l.blockedSkills[realDir(p)] {
+			if !slices.Contains(mine, s.Name) {
+				mine = append(mine, s.Name)
+			}
+			continue
+		}
 		if inShared(s) {
 			// a copy of its own of the very same files would be the skill
 			// twice as much as a link: kept aside, as it would be for one
@@ -473,6 +546,7 @@ func (l *Library) syncSkills(t *Target, res *Result, all []*Target) {
 		// the folder the library's skill links to is there already: one
 		// brought in from ~/.agents/skills, which stays where it is
 		if ours(p, s.Name) || realDir(p) == realDir(skillDir(s.Name)) {
+			mine = append(mine, s.Name)
 			// an old copy a previous swap couldn't remove is tried again
 			if ours(p, s.Name) {
 				dropOld(p, s.Name)
@@ -483,6 +557,7 @@ func (l *Library) syncSkills(t *Target, res *Result, all []*Target) {
 			if ours(p, s.Name) && !cp && !linked(p) {
 				if ok, err := relink(id, p, s.Name); err != nil {
 					res.fail(id, "skill:"+s.Name, err)
+					continue
 				} else if ok {
 					res.changed(id)
 				}
@@ -490,14 +565,22 @@ func (l *Library) syncSkills(t *Target, res *Result, all []*Target) {
 			// a copy is made again once the library's skill has changed: in
 			// an agent that takes copies, and where magpie couldn't link
 			// (Windows without the right to) and left a copy instead
-			if ours(p, s.Name) && ((cp && linked(p)) || (!linked(p) && !fresh(p, s.Name) && hashDir(realDir(skillDir(s.Name))) != "")) {
+			again := cp && linked(p)
+			if ours(p, s.Name) && !linked(p) && l.libHash(s.Name) != "" {
+				current, err := copyIsFresh(p, l.libHash(s.Name), l.untouched[p])
+				if err != nil {
+					res.fail(id, "skill:"+s.Name, err)
+					continue
+				}
+				again = !current
+			}
+			if ours(p, s.Name) && again {
 				if err := copyIn(p, s.Name); err != nil {
 					res.fail(id, "skill:"+s.Name, err)
 				} else {
 					res.changed(id)
 				}
 			}
-			mine = append(mine, s.Name)
 			continue
 		}
 		if _, err := os.Lstat(p); err == nil {
@@ -546,8 +629,11 @@ type Probe struct {
 	Source     string      `json:"source"`
 	Kind       string      `json:"kind"`
 	Candidates []Candidate `json:"candidates"`
-	root       string      // the folder the candidates' paths are in
-	src        Source
+	// Left is the skills there too big to install on their own, left out
+	// of the candidates (#2062)
+	Left []LeftOut `json:"left,omitempty"`
+	root string    // the folder the candidates' paths are in
+	src  Source
 }
 
 var probes = struct {
@@ -556,9 +642,57 @@ var probes = struct {
 }{m: map[string]*probeEntry{}}
 
 type probeEntry struct {
-	p   *Probe
-	tmp string
-	at  time.Time
+	p     *Probe
+	tmp   string
+	timer *time.Timer // removes it when probeLife is up
+}
+
+// probeLife is how long a probe's download is kept for an install from it.
+var probeLife = 15 * time.Minute
+
+// skillTemp starts the name of a download's folder in the temp dir.
+const skillTemp = "magpie-skill-"
+
+// keepProbe caches p's download under input for probeLife, in place of
+// one before it; the folder is removed when it is replaced or expires, not
+// only at the next probe, which may never come (#2321).
+func keepProbe(input string, p *Probe, tmp string) {
+	e := &probeEntry{p: p, tmp: tmp}
+	probes.Lock()
+	old := probes.m[input]
+	probes.m[input] = e
+	e.timer = time.AfterFunc(probeLife, func() {
+		probes.Lock()
+		if probes.m[input] == e {
+			delete(probes.m, input)
+		}
+		probes.Unlock()
+		os.RemoveAll(tmp)
+	})
+	probes.Unlock()
+	if old != nil {
+		old.timer.Stop()
+		os.RemoveAll(old.tmp)
+	}
+}
+
+// sweepStaleDownloads removes the downloads a magpie that quit left in the
+// temp dir (#2321): a folder of ours over an hour old, longer than a probe
+// is kept or a fetch takes, so none in use.
+func sweepStaleDownloads() {
+	dir := os.TempDir()
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), skillTemp) {
+			continue
+		}
+		if fi, err := e.Info(); err == nil && time.Since(fi.ModTime()) > time.Hour {
+			os.RemoveAll(filepath.Join(dir, e.Name()))
+		}
+	}
 }
 
 // githubSource reads a repository out of what the user typed: owner/repo,
@@ -585,7 +719,9 @@ func githubSource(s string) (Source, bool) {
 	}
 	src := Source{Kind: "github", Repo: parts[0] + "/" + strings.TrimSuffix(parts[1], ".git")}
 	if len(parts) >= 4 && (parts[2] == "tree" || parts[2] == "blob") {
-		src.Ref = parts[3]
+		if src.Ref = parts[3]; src.Ref == "HEAD" {
+			src.Ref = "" // the default branch, as a source without a ref is
+		}
 		src.Path = strings.Join(parts[4:], "/")
 		src.Path = strings.TrimSuffix(strings.TrimSuffix(src.Path, "SKILL.md"), "/")
 	}
@@ -611,33 +747,74 @@ var tarballURL = func(repo, ref string) string {
 	return "https://codeload.github.com/" + repo + "/tar.gz/" + url.PathEscape(ref)
 }
 
-// fetch downloads the repository into a new folder and gives it back.
+// fetch downloads the repository into a new folder and gives it back. A
+// repository codeload doesn't hand out without a token, a private one, is
+// asked of GitHub's API with the user's GitHub token (37FlowAI on X): the
+// API redirects to codeload, and the token, sent to the API's host alone,
+// isn't carried over to it.
 func fetch(src Source) (string, error) {
-	req, _ := http.NewRequest("GET", tarballURL(src.Repo, src.Ref), nil)
-	req.Header.Set("User-Agent", "magpie")
 	c := &http.Client{Timeout: 2 * time.Minute}
-	resp, err := source.DoOfficial(c, req)
+	get := func(u string) (*http.Response, bool, error) {
+		req, _ := http.NewRequest("GET", u, nil)
+		req.Header.Set("User-Agent", "magpie")
+		token := withGitHubToken(req)
+		resp, err := source.DoOfficial(c, req)
+		return resp, token, err
+	}
+	if tooBig.has(src) {
+		return fetchSkillFiles(src)
+	}
+	resp, _, err := get(tarballURL(src.Repo, src.Ref))
 	if err != nil {
 		return "", fmt.Errorf("couldn't reach GitHub: %w", err)
 	}
+	token := false
+	if resp.StatusCode == 404 {
+		if t, _ := GitHubToken(); t != "" {
+			resp.Body.Close()
+			ref := ""
+			if src.Ref != "" {
+				ref = "/" + url.PathEscape(src.Ref)
+			}
+			if resp, token, err = get(githubAPI + "/repos/" + src.Repo + "/tarball" + ref); err != nil {
+				return "", fmt.Errorf("couldn't reach GitHub: %w", err)
+			}
+		}
+	}
 	defer resp.Body.Close()
 	switch {
-	case resp.StatusCode == 404:
+	case resp.StatusCode == 404 || resp.StatusCode == 401 && token:
+		what := "repository " + src.Repo
 		if src.Ref != "" {
-			return "", fmt.Errorf("GitHub has no %s at %s (a private repository can't be installed from)", src.Repo, src.Ref)
+			what = src.Repo + " at " + src.Ref
 		}
-		return "", fmt.Errorf("GitHub has no repository %s (a private one can't be installed from)", src.Repo)
+		if !token {
+			return "", fmt.Errorf("GitHub has no %s (a private repository installs with a GitHub token that can read it, set in Settings → Network and sharing)", what)
+		}
+		_, from := GitHubToken()
+		where := "the GitHub token in Settings → Network and sharing"
+		if from != "settings" {
+			where = from
+		}
+		return "", fmt.Errorf("GitHub has no %s that %s can read", what, where)
 	case resp.StatusCode == 403 || resp.StatusCode == 429:
 		return "", fmt.Errorf("GitHub is limiting requests from here; try again in a while")
 	case resp.StatusCode != 200:
 		return "", fmt.Errorf("GitHub answered %s", resp.Status)
 	}
-	tmp, err := os.MkdirTemp("", "magpie-skill-")
+	tmp, err := os.MkdirTemp("", skillTemp)
 	if err != nil {
 		return "", err
 	}
 	if err := untar(resp.Body, tmp); err != nil {
 		os.RemoveAll(tmp)
+		if errors.Is(err, errTooBig) {
+			// a repository that is mostly something else (an app with its
+			// skills beside it, #1941): only the skills' folders
+			resp.Body.Close()
+			tooBig.add(src)
+			return fetchSkillFiles(src)
+		}
 		return "", err
 	}
 	return tmp, nil
@@ -673,8 +850,8 @@ func untar(r io.Reader, dst string) error {
 				return err
 			}
 		case tar.TypeReg:
-			if total += h.Size; total > 200<<20 {
-				return fmt.Errorf("the repository is too big to install skills from (over 200 MB)")
+			if total += h.Size; total > maxFetch {
+				return errTooBig
 			}
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 				return err
@@ -697,7 +874,11 @@ func untar(r io.Reader, dst string) error {
 }
 
 // candidates are the skills under root/sub: a folder with a SKILL.md,
-// looked for a few folders deep, and not inside another skill.
+// looked for a few folders deep, and not inside another skill. A hidden
+// folder is an agent's own (.claude, .agents) and is looked in only for its
+// skills folder: some repositories keep their skill only in
+// .claude/skills (#1964, UFO404). A skill found there that the repository
+// also has outside a hidden folder is that one, listed once.
 func candidates(root, sub string) []Candidate {
 	base := filepath.Join(root, filepath.FromSlash(sub))
 	var out []Candidate
@@ -717,17 +898,46 @@ func candidates(root, sub string) []Candidate {
 		es, _ := os.ReadDir(dir)
 		for _, e := range es {
 			n := e.Name()
-			if strings.HasPrefix(n, ".") || n == "node_modules" {
+			if n == "node_modules" {
 				continue
 			}
-			p := filepath.Join(dir, n)
+			p, d := filepath.Join(dir, n), depth-1
+			if strings.HasPrefix(n, ".") {
+				if d == 0 {
+					continue
+				}
+				p, d = filepath.Join(p, "skills"), d-1
+			}
 			if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-				walk(p, depth-1)
+				walk(p, d)
 			}
 		}
 	}
 	walk(base, 4)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return unhiddenFirst(out, func(c Candidate) string { return c.Path }, func(a, b Candidate) bool {
+		return a.Name == b.Name || lastPart(a.Path) == lastPart(b.Path)
+	})
+}
+
+// inHidden is whether a skill's path, from the repository's top, goes
+// through a hidden folder.
+func inHidden(path string) bool {
+	return slices.ContainsFunc(strings.Split(path, "/"), func(p string) bool { return strings.HasPrefix(p, ".") })
+}
+
+// unhiddenFirst drops a skill in a hidden folder that is the same skill as
+// one outside every hidden folder, or as a hidden one listed before it: an
+// agent's folder often holds a copy of the repository's own skills.
+func unhiddenFirst[T any](list []T, path func(T) string, same func(a, b T) bool) []T {
+	out := make([]T, 0, len(list))
+	for i, c := range list {
+		if inHidden(path(c)) && (slices.ContainsFunc(list, func(o T) bool { return !inHidden(path(o)) && same(o, c) }) ||
+			slices.ContainsFunc(list[:i], func(o T) bool { return inHidden(path(o)) && same(o, c) })) {
+			continue
+		}
+		out = append(out, c)
+	}
 	return out
 }
 
@@ -738,14 +948,7 @@ func ProbeSkills(input string) (*Probe, error) {
 	if input == "" {
 		return nil, fmt.Errorf("paste a GitHub link or a folder's path")
 	}
-	probes.Lock()
-	for k, e := range probes.m {
-		if time.Since(e.at) > 15*time.Minute {
-			os.RemoveAll(e.tmp)
-			delete(probes.m, k)
-		}
-	}
-	probes.Unlock()
+	sweepStaleDownloads()
 
 	p := &Probe{Source: input}
 	if dir := expand(input); filepath.IsAbs(dir) {
@@ -766,12 +969,8 @@ func ProbeSkills(input string) (*Probe, error) {
 			return nil, fmt.Errorf("%s has no folder %s", src.Repo, src.Path)
 		}
 		p.Candidates = candidates(tmp, src.Path)
-		probes.Lock()
-		if old := probes.m[input]; old != nil {
-			os.RemoveAll(old.tmp)
-		}
-		probes.m[input] = &probeEntry{p: p, tmp: tmp, at: time.Now()}
-		probes.Unlock()
+		p.Left = tookLeftOut(tmp, src.Path)
+		keepProbe(input, p, tmp)
 	} else {
 		return nil, fmt.Errorf("that's neither a GitHub repository nor a folder's full path")
 	}
@@ -800,73 +999,169 @@ func cachedProbe(input string) (*Probe, error) {
 }
 
 // InstallSkills adds the skills at those paths of the source to the library
-// and gives them to the agents named.
+// and gives them to the agents named. One the library has already, or
+// one whose name is taken, is left as it is and said in the result; the
+// others are installed all the same.
 func InstallSkills(input string, paths, agents []string) (*Result, error) {
 	p, err := cachedProbe(input)
 	if err != nil {
 		return nil, err
 	}
-	return change(func(l *Library) error {
-		for _, path := range paths {
-			i := slices.IndexFunc(p.Candidates, func(c Candidate) bool { return c.Path == path })
-			if i < 0 {
-				return fmt.Errorf("no skill at %q", path)
-			}
-			c := p.Candidates[i]
-			if err := checkName("skill", c.Name); err != nil {
-				return err
-			}
-			if l.skill(c.Name) != nil {
-				return fmt.Errorf("the library already has a skill called %s", c.Name)
-			}
-			from := filepath.Join(p.root, filepath.FromSlash(c.Path))
-			src := p.src
-			if err := os.MkdirAll(skillsDir(), 0o755); err != nil {
-				return err
-			}
-			// a folder already in the library's own (#595): linked to itself
-			// it fails, and copied onto itself every file of it was emptied
-			if src.Kind == "folder" && realDir(from) == realDir(skillDir(c.Name)) {
-				return fmt.Errorf("%s is in the library's folder already: bring it in from the skills found there", c.Name)
-			}
-			// something by that name in the library's folder that the
-			// library doesn't list is never written into: that would mix
-			// two skills' files, and a failed copy would take it away
-			if _, err := os.Lstat(skillDir(c.Name)); err == nil {
-				return fmt.Errorf("the library's folder already has a %s in it (%s)", c.Name, skillDir(c.Name))
-			}
-			if src.Kind == "folder" {
-				src.Dir = from
-				if err := dirLink(from, skillDir(c.Name)); err != nil {
-					if errors.Is(err, fs.ErrExist) {
-						return fmt.Errorf("the library already has a skill called %s", c.Name)
-					}
-					if err := copyDir(from, skillDir(c.Name)); err != nil {
-						os.RemoveAll(skillDir(c.Name))
-						return err
-					}
-				}
-			} else {
-				src.Path = c.Path
-				if err := copyDir(from, skillDir(c.Name)); err != nil {
-					os.RemoveAll(skillDir(c.Name))
-					return err
-				}
-			}
-			sk := &Skill{Name: c.Name, Source: &src, Agents: slices.Clone(agents)}
-			if src.Kind == "github" {
-				sk.Hash = hashDir(skillDir(c.Name))
-			}
-			forgetCheck(c.Name)
-			l.Skills = append(l.Skills, sk)
+	return installChange(func(l *Library, in *installed) error { return installFrom(l, p, paths, agents, true, in) })
+}
+
+// installed is what an install did with each skill picked: added, had
+// already (the same skill from the same source), or left out, and why.
+type installed struct {
+	added, had []string
+	skipped    []Problem
+}
+
+func (in *installed) skip(name string, err error) {
+	in.skipped = append(in.skipped, Problem{What: "skill:" + name, Error: err.Error()})
+}
+
+// installChange runs an install in a change of the library. Only when
+// nothing was added or had already does it fail, with the first reason a
+// skill was left out: one skill in the way of a set never stops the rest
+// (lc on Discord).
+func installChange(f func(l *Library, in *installed) error) (*Result, error) {
+	in := &installed{}
+	res, err := change(func(l *Library) error {
+		if err := f(l, in); err != nil {
+			return err
+		}
+		if len(in.added) == 0 && len(in.had) == 0 && len(in.skipped) > 0 {
+			return errors.New(in.skipped[0].Error)
 		}
 		return nil
 	})
+	if res != nil {
+		res.Installed, res.Had, res.Skipped = in.added, in.had, in.skipped
+	}
+	return res, err
+}
+
+// fromSameSource is whether the library's skill came from where the one
+// being installed comes from: that repository's folder, or that folder.
+func fromSameSource(s *Skill, src Source, path, from string) bool {
+	if s.Source == nil || s.Source.Kind != src.Kind {
+		return false
+	}
+	switch src.Kind {
+	case "github":
+		return strings.EqualFold(s.Source.Repo, src.Repo) && s.Source.Path == path
+	case "folder":
+		return realDir(s.Source.Dir) == realDir(from)
+	}
+	return false
+}
+
+// installFrom adds the skills at those paths of a probe's source to the
+// library. shown is whether the user saw every skill the probe found, in
+// the picker: those not picked aren't offered as new by a check. A skill
+// that can't be added is said in in.skipped, and the user's folder in its
+// way is never written into or taken away.
+func installFrom(l *Library, p *Probe, paths, agents []string, shown bool, in *installed) error {
+	if err := os.MkdirAll(skillsDir(), 0o755); err != nil {
+		return err
+	}
+	for _, path := range paths {
+		i := slices.IndexFunc(p.Candidates, func(c Candidate) bool { return c.Path == path })
+		if i < 0 {
+			in.skip(lastPart(path), fmt.Errorf("no skill at %q", path))
+			continue
+		}
+		c := p.Candidates[i]
+		if err := checkName("skill", c.Name); err != nil {
+			in.skip(c.Name, err)
+			continue
+		}
+		from := filepath.Join(p.root, filepath.FromSlash(c.Path))
+		src := p.src
+		// the same skill from the same place is had already, whatever
+		// the user has changed in it since; another by that name is theirs
+		if s := l.skill(c.Name); s != nil {
+			if fromSameSource(s, src, c.Path, from) {
+				in.had = append(in.had, c.Name)
+			} else {
+				in.skip(c.Name, fmt.Errorf("the library already has another skill called %s, left as it is", c.Name))
+			}
+			continue
+		}
+		dir := skillDir(c.Name)
+		// something by that name in the library's folder that the
+		// library doesn't list is never written into: that would mix
+		// two skills' files, and a failed copy would take it away. One
+		// holding exactly this skill's files (an install that stopped
+		// before the library was saved left it) is listed where it is.
+		if _, err := os.Lstat(dir); err == nil {
+			switch {
+			case src.Kind == "folder" && linked(dir) && realDir(dir) == realDir(from):
+				src.Dir = from
+			case src.Kind == "github" && !linked(dir) && sameTree(dir, from):
+				src.Path = c.Path
+			case src.Kind == "folder" && realDir(from) == realDir(dir):
+				// a folder already in the library's own (#595): linked to
+				// itself it fails, and copied onto itself every file of it
+				// was emptied
+				in.skip(c.Name, fmt.Errorf("%s is in the library's folder already: bring it in from the skills found there", c.Name))
+				continue
+			default:
+				in.skip(c.Name, fmt.Errorf("the library's folder already has a %s that isn't this one (%s), left as it is: bring it in from the skills found there to use it", c.Name, dir))
+				continue
+			}
+			in.had = append(in.had, c.Name)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			// can't tell what is there: left alone
+			in.skip(c.Name, err)
+			continue
+		} else if src.Kind == "folder" {
+			src.Dir = from
+			if err := dirLink(from, dir); err != nil {
+				if errors.Is(err, fs.ErrExist) {
+					in.skip(c.Name, fmt.Errorf("the library's folder already has a %s in it (%s)", c.Name, dir))
+					continue
+				}
+				if err := copyDir(from, dir); err != nil {
+					os.RemoveAll(dir)
+					in.skip(c.Name, err)
+					continue
+				}
+			}
+			in.added = append(in.added, c.Name)
+		} else {
+			src.Path = c.Path
+			if err := copyDir(from, dir); err != nil {
+				os.RemoveAll(dir)
+				in.skip(c.Name, err)
+				continue
+			}
+			in.added = append(in.added, c.Name)
+		}
+		sk := &Skill{Name: c.Name, Source: &src, Agents: slices.Clone(agents)}
+		if src.Kind == "github" {
+			sk.Hash = hashDir(dir)
+			// every skill the picker showed was offered: a check
+			// offers only those the repository adds later
+			l.seenAt(src.Repo, src.Ref, c.Path)
+			if shown {
+				for _, c := range p.Candidates {
+					l.seenAt(src.Repo, src.Ref, c.Path)
+				}
+			}
+		}
+		forgetCheck(c.Name)
+		l.Skills = append(l.Skills, sk)
+	}
+	return nil
 }
 
 // UpdateSkill fetches a skill from GitHub again, in place: the agents'
-// links go on pointing at it.
-func UpdateSkill(name string) (*Result, error) {
+// links go on pointing at it. One changed here since it was fetched is
+// an *EditedError unless replace is set, and then the changed version is
+// kept with the backups (#1449).
+func UpdateSkill(name string, replace bool) (*Result, error) {
 	mu.Lock()
 	l, err := load()
 	mu.Unlock()
@@ -879,16 +1174,29 @@ func UpdateSkill(name string) (*Result, error) {
 	}
 	f := &fetcher{}
 	defer f.clean()
+	if edited, _ := l.editState(s, Targets()); edited && !replace {
+		return nil, &EditedError{Name: name}
+	}
 	up, err := f.prepare(s)
 	if err != nil {
 		return nil, err
 	}
-	return change(func(l *Library) error { return up.apply(l) })
+	return change(func(l *Library) error {
+		targets := Targets()
+		if s := l.skill(name); s != nil && !replace {
+			// changed while it was fetched
+			if edited, _ := l.editState(s, targets); edited {
+				return &EditedError{Name: name}
+			}
+		}
+		return up.apply(l, targets)
+	})
 }
 
 // UpdateSkills fetches again every skill that came from GitHub, each
 // repository once, and writes the agents once. A skill that couldn't be
-// fetched is said in Unupdated; the others are updated all the same.
+// fetched is said in Unupdated, as is one changed here since it was
+// fetched, which is left as it is; the others are updated all the same.
 func UpdateSkills() (*Result, error) { return updateSkills(nil) }
 
 // UpdateSomeSkills is UpdateSkills for the skills named only: those a
@@ -938,8 +1246,15 @@ func updateSkills(names []string) (*Result, error) {
 	wg.Wait()
 	sort.Slice(failed, func(i, j int) bool { return failed[i].What < failed[j].What })
 	res, err := change(func(l *Library) error {
+		targets := Targets()
 		for _, up := range ups {
-			if err := up.apply(l); err != nil {
+			if s := l.skill(up.name); s != nil {
+				if edited, _ := l.editState(s, targets); edited {
+					failed = append(failed, Problem{What: "skill:" + up.name, Error: (&EditedError{Name: up.name}).Error()})
+					continue
+				}
+			}
+			if err := up.apply(l, targets); err != nil {
 				failed = append(failed, Problem{What: "skill:" + up.name, Error: err.Error()})
 			}
 		}
@@ -1058,9 +1373,15 @@ func (f *fetcher) prepare(s *Skill) (*skillUpdate, error) {
 }
 
 // apply puts the fetched skill in the old one's place; the agents' links
-// go on pointing at it.
-func (up *skillUpdate) apply(l *Library) error {
+// go on pointing at it. The old one goes to the backups unless it is
+// known to be the files fetched before, unchanged.
+func (up *skillUpdate) apply(l *Library, targets []*Target) error {
 	name := up.name
+	keep := true
+	if s := l.skill(name); s != nil {
+		edited, known := l.editState(s, targets)
+		keep = edited || !known
+	}
 	next, old := skillDir("."+name+".next"), skillDir("."+name+".old")
 	os.RemoveAll(next)
 	os.RemoveAll(old)
@@ -1097,6 +1418,13 @@ func (up *skillUpdate) apply(l *Library) error {
 	forgetCheck(name)
 	if old == "" {
 		return nil
+	}
+	if keep {
+		var lb *leftBehind
+		if _, err := keepReplaced(name, old); err != nil && !errors.As(err, &lb) {
+			// the update is in; what it replaced stays beside it, not lost
+			return fmt.Errorf("%s is updated, but the version it replaced couldn't be kept with the backups and is at %s: %w", name, old, err)
+		}
 	}
 	return os.RemoveAll(old)
 }
@@ -1232,19 +1560,33 @@ func removeSkill(l *Library, name, stamp string) error {
 // the library's by that name for the library's: the agent's folder is kept
 // aside with the backups, and the library's linked in its place.
 func UseLibrarySkill(name, agentID string) (*Result, error) {
+	return UseLibrarySkills([]string{name}, agentID)
+}
+
+// UseLibrarySkills is UseLibrarySkill for several of one agent's skills at
+// once, as the Library's warning settles them together (#1896). Claude
+// Desktop's own skills (Anthropic's built in, or made there) aren't put
+// aside: they are listed in its manifest, not only a folder, so only
+// KeepAgentSkills settles those.
+func UseLibrarySkills(names []string, agentID string) (*Result, error) {
 	return change(func(l *Library) error {
-		s, t, err := ownSkill(l, name, agentID)
-		if err != nil {
-			return err
-		}
-		p := filepath.Join(t.Skills, name)
-		if _, err := os.Lstat(p); err == nil && !ours(p, name) && realDir(p) != realDir(skillDir(name)) {
-			if _, err := setAside(t.Agent.ID, p); err != nil {
+		for _, name := range names {
+			s, t, err := ownSkill(l, name, agentID)
+			if err != nil {
 				return err
 			}
-		}
-		if !slices.Contains(s.Agents, t.Agent.ID) && !slices.ContainsFunc(sharing(t), func(o string) bool { return slices.Contains(s.Agents, o) }) {
-			s.Agents = set(s.Agents, t.Agent.ID, true)
+			if len(t.Desktop) > 0 {
+				return fmt.Errorf("Claude Desktop keeps its own %s: it can't be put aside for the library's, only kept", name)
+			}
+			p := filepath.Join(t.Skills, name)
+			if _, err := os.Lstat(p); err == nil && !ours(p, name) && realDir(p) != realDir(skillDir(name)) {
+				if _, err := setAside(t.Agent.ID, p); err != nil {
+					return err
+				}
+			}
+			if !slices.Contains(s.Agents, t.Agent.ID) && !slices.ContainsFunc(sharing(t), func(o string) bool { return slices.Contains(s.Agents, o) }) {
+				s.Agents = set(s.Agents, t.Agent.ID, true)
+			}
 		}
 		return nil
 	})
@@ -1254,13 +1596,21 @@ func UseLibrarySkill(name, agentID string) (*Result, error) {
 // the library no longer gives it that skill (nor any agent that reads the
 // very same folder).
 func KeepAgentSkill(name, agentID string) (*Result, error) {
+	return KeepAgentSkills([]string{name}, agentID)
+}
+
+// KeepAgentSkills is KeepAgentSkill for several of one agent's skills at
+// once (#1896).
+func KeepAgentSkills(names []string, agentID string) (*Result, error) {
 	return change(func(l *Library) error {
-		s, t, err := ownSkill(l, name, agentID)
-		if err != nil {
-			return err
-		}
-		for _, id := range append(sharing(t), t.Agent.ID) {
-			s.Agents = set(s.Agents, id, false)
+		for _, name := range names {
+			s, t, err := ownSkill(l, name, agentID)
+			if err != nil {
+				return err
+			}
+			for _, id := range append(sharing(t), t.Agent.ID) {
+				s.Agents = set(s.Agents, id, false)
+			}
 		}
 		return nil
 	})
@@ -1336,6 +1686,9 @@ func foundSkills(l *Library) []FoundSkill {
 			places = append(places, place{dir: t.Skills, agent: t.Agent.ID})
 		}
 	}
+	// a skill in several agents is compared with the first found, which
+	// is walked once
+	seen := walked{}
 	for _, pl := range places {
 		es, _ := os.ReadDir(pl.dir)
 		for _, e := range es {
@@ -1377,7 +1730,7 @@ func foundSkills(l *Library) []FoundSkill {
 			case pl.agent == "":
 				// another by that name in the shared folder than the one in
 				// the library's: no agent's, and left as it is
-			case sameTree(p, f.at):
+			case sameTreeIn(seen, p, f.at):
 				f.Copies = append(f.Copies, pl.agent)
 			default:
 				f.Others = append(f.Others, pl.agent)
@@ -1483,6 +1836,105 @@ func importSkill(l *Library, found []FoundSkill, name string) error {
 	return nil
 }
 
+// RemoveFoundSkill takes a skill the agents have of their own out of every
+// agent that has it (#1303), without bringing it into the library first:
+// each agent's folder, and its copies of the very same files, go to the
+// backups; its links are taken away. Its entry in the shared
+// ~/.agents/skills, or a folder of it left in the library's own, goes to
+// the backups too, as agents read those. A folder elsewhere that the
+// agents only linked to is left where it is, and so is another skill by
+// that name (Others): that is another skill.
+func RemoveFoundSkill(name string) (*Result, error) {
+	return change(func(l *Library) error {
+		return removeFound(foundSkills(l), name)
+	})
+}
+
+// RemoveFoundSkills takes the skills named, of those the agents have of
+// their own, out of every agent in one change, each exactly as
+// RemoveFoundSkill takes one (wongxy on Discord: 批量删除). One that can't
+// be taken out stays, and is said in Unremoved; the others go all the
+// same. Only when none went does the change fail, with the first reason.
+func RemoveFoundSkills(names []string) (*Result, error) {
+	if len(names) == 0 {
+		return nil, fmt.Errorf("no skills to remove")
+	}
+	names = slices.Compact(slices.Sorted(slices.Values(names)))
+	var failed []Problem
+	res, err := change(func(l *Library) error {
+		found := foundSkills(l)
+		for _, name := range names {
+			if err := removeFound(found, name); err != nil {
+				failed = append(failed, Problem{What: "skill:" + name, Error: err.Error()})
+			}
+		}
+		if len(failed) == len(names) {
+			return errors.New(failed[0].Error)
+		}
+		return nil
+	})
+	if res != nil {
+		res.Unremoved = failed
+	}
+	return res, err
+}
+
+// removeFound takes the skill of that name, of those found in the agents,
+// out of each place it is: links taken away, folders set aside.
+func removeFound(found []FoundSkill, name string) error {
+	i := slices.IndexFunc(found, func(f FoundSkill) bool { return f.Name == name })
+	if i < 0 {
+		return fmt.Errorf("no agent has a skill called %s that the library hasn't", name)
+	}
+	f := found[i]
+	type entry struct{ who, p string }
+	var es []entry
+	for _, id := range slices.Concat(f.Agents, f.Copies) {
+		if t := targetByID(id); t != nil && t.Skills != "" {
+			es = append(es, entry{id, filepath.Join(t.Skills, name)})
+		}
+	}
+	if f.Shared != "" {
+		es = append(es, entry{"agents", f.Shared})
+	}
+	if f.Library != "" {
+		es = append(es, entry{"library", f.Library})
+	}
+	// links first, so none is left pointing at a folder already set
+	// aside; an agent reading the very same folder as another has its
+	// entry gone already
+	slices.SortStableFunc(es, func(a, b entry) int {
+		la, lb := linked(a.p), linked(b.p)
+		switch {
+		case la == lb:
+			return 0
+		case la:
+			return -1
+		}
+		return 1
+	})
+	seen := map[string]bool{}
+	for _, e := range es {
+		if seen[e.p] {
+			continue
+		}
+		seen[e.p] = true
+		if _, err := os.Lstat(e.p); errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if linked(e.p) {
+			if err := os.Remove(e.p); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := setAside(e.who, e.p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ---- files ----------------------------------------------------------------
 
 func copyDir(from, to string) error {
@@ -1576,23 +2028,63 @@ func setAside(agent, p string) (string, error) {
 // sameTree is whether two skill folders (links followed) hold the same
 // files with the same bytes, leaving aside what Finder or version control
 // keeps in one (.DS_Store, .git) and the mark on magpie's own copy.
-func sameTree(a, b string) bool {
+// Two folders unchanged since they were last compared aren't read again
+// (treememo.go).
+func sameTree(a, b string) bool { return sameTreeIn(nil, a, b) }
+
+// walked is the folders one pass has walked (treeOf), for a folder
+// compared with several others to be walked once in it.
+type walked map[string]*tree
+
+// sameTreeIn is sameTree, taking a folder walked already in this pass
+// from w (nil: none).
+func sameTreeIn(w walked, a, b string) bool {
 	a, b = realDir(a), realDir(b)
-	fa, okA := treeOf(a)
-	fb, okB := treeOf(b)
-	if !okA || !okB || len(fa) != len(fb) {
+	look := func(d string) (tree, bool) {
+		if t, ok := w[d]; ok {
+			if t == nil {
+				return tree{}, false
+			}
+			return *t, true
+		}
+		t, ok := treeOf(d)
+		if w != nil {
+			if ok {
+				w[d] = &t
+			} else {
+				w[d] = nil
+			}
+		}
+		return t, ok
+	}
+	ta, okA := look(a)
+	tb, okB := look(b)
+	if !okA || !okB {
+		// unknown: not the same, and not kept as different
 		return false
+	}
+	return rememberedSame(a, b, ta, tb, func() (bool, bool) { return compareTrees(a, b, ta.files, tb.files) })
+}
+
+// compareTrees is sameTree, reading every file of both. sure is false
+// when one couldn't be read whole: they aren't taken to be the same, and
+// that isn't kept as what they are.
+func compareTrees(a, b string, fa, fb map[string]treeEntry) (same, sure bool) {
+	if len(fa) != len(fb) {
+		return false, true
 	}
 	for rel, x := range fa {
 		y, ok := fb[rel]
 		if !ok || x != y {
-			return false
+			return false, true
 		}
-		if x.link == "" && !sameFile(filepath.Join(a, rel), filepath.Join(b, rel)) {
-			return false
+		if x.link == "" {
+			if same, sure := sameFile(filepath.Join(a, rel), filepath.Join(b, rel)); !same {
+				return false, sure
+			}
 		}
 	}
-	return true
+	return true, true
 }
 
 type treeEntry struct {
@@ -1600,10 +2092,19 @@ type treeEntry struct {
 	link string // where a link in it points
 }
 
-// treeOf is a folder's files and links by where they are in it; not ok
-// when it can't be read, or is too big to be worth comparing.
-func treeOf(root string) (map[string]treeEntry, bool) {
+// tree is a folder's files and links by where they are in it, and the
+// stamp of them (treememo.go), from one walk that opens no file.
+type tree struct {
+	files   map[string]treeEntry
+	stamp   string
+	settled bool
+}
+
+// treeOf is a folder's files and links; not ok when it can't be read, or
+// is too big to be worth comparing.
+func treeOf(root string) (tree, bool) {
 	out := map[string]treeEntry{}
+	st := newStamper()
 	var total int64
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -1625,6 +2126,10 @@ func treeOf(root string) (map[string]treeEntry, bool) {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, p)
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
 		if d.Type()&fs.ModeSymlink != 0 {
 			to, err := os.Readlink(p)
 			if err != nil {
@@ -1632,41 +2137,50 @@ func treeOf(root string) (map[string]treeEntry, bool) {
 			}
 			out[rel] = treeEntry{link: to}
 		} else if d.Type().IsRegular() {
-			fi, err := d.Info()
-			if err != nil {
-				return err
-			}
 			out[rel] = treeEntry{size: fi.Size()}
 			total += fi.Size()
+		} else {
+			return nil
 		}
+		st.add(rel, fi)
 		if len(out) > 20000 || total > 256<<20 {
 			return errors.New("too big to compare")
 		}
 		return nil
 	})
-	return out, err == nil
+	if err != nil {
+		return tree{}, false
+	}
+	stamp, settled := st.done()
+	return tree{files: out, stamp: stamp, settled: settled}, true
 }
 
-func sameFile(a, b string) bool {
+// sameFile is whether a and b hold the same bytes; sure is false when one
+// couldn't be read.
+func sameFile(a, b string) (same, sure bool) {
 	fa, err := os.Open(a)
 	if err != nil {
-		return false
+		return false, false
 	}
 	defer fa.Close()
 	fb, err := os.Open(b)
 	if err != nil {
-		return false
+		return false, false
 	}
 	defer fb.Close()
 	ba, bb := make([]byte, 64<<10), make([]byte, 64<<10)
+	end := func(e error) bool { return e == io.EOF || e == io.ErrUnexpectedEOF }
 	for {
 		na, ea := io.ReadFull(fa, ba)
 		nb, eb := io.ReadFull(fb, bb)
+		if ea != nil && !end(ea) || eb != nil && !end(eb) {
+			return false, false
+		}
 		if na != nb || !bytes.Equal(ba[:na], bb[:nb]) {
-			return false
+			return false, true
 		}
 		if ea != nil || eb != nil {
-			return ea == eb || (ea == io.EOF || ea == io.ErrUnexpectedEOF) && (eb == io.EOF || eb == io.ErrUnexpectedEOF)
+			return end(ea) && end(eb), true
 		}
 	}
 }

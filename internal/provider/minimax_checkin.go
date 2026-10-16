@@ -21,6 +21,7 @@ package provider
 // WorkBuddy's and Trae CN's are (checkin.go).
 
 import (
+	"cmp"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
@@ -131,7 +132,7 @@ func newMiniMaxCheckiner(accounts func() []miniMaxAccount) checkiner {
 	return checkiner{path: miniMaxCheckinPath(), now: time.Now, mu: &miniMaxCheckinMu, by: "minimax", label: "minimax", accounts: func() []checkinAcct {
 		var out []checkinAcct
 		for _, a := range accounts() {
-			out = append(out, checkinAcct{User: a.User, On: a.On, key: miniMaxCheckinKey(a), do: func(ctx context.Context) WorkBuddyCheckin { return miniMaxCheckin(ctx, a) }})
+			out = append(out, checkinAcct{User: a.User, On: a.On, key: miniMaxCheckinKey(a), provider: cmp.Or(a.card, a.siteID()), do: func(ctx context.Context) WorkBuddyCheckin { return miniMaxCheckin(ctx, a) }})
 		}
 		return out
 	}}
@@ -276,7 +277,7 @@ func miniMaxCards(accts []miniMaxAccount) []checkinCard {
 func miniMaxCheckinAccounts() []miniMaxAccount {
 	var out []miniMaxAccount
 	for _, site := range []string{MiniMaxCodeID, MiniMaxCodeGlobalID} {
-		if pp, ok := PluginOf(site); ok {
+		if pp, ok := PluginOf(site); ok && !pluginChecksIn(pp) {
 			out = append(out, miniMaxSiteAccounts(site, pp)...)
 		}
 	}

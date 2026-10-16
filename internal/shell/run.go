@@ -1,60 +1,153 @@
-//go:build nogui
+//go:build nogui && echo
 
 package shell
 
 import (
+	"log"
+
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 	"github.com/yetone/magpie/internal/gui"
 )
 
 // Options configures the shell.
 type Options struct {
-	// URL is the page the window opens: "/" for the first tab.
-	URL string
+	// Page is the page the window opens on; "" opens the first one.
+	Page Page
 	// Width and Height of the window in DIPs.
 	Width, Height int
-	// ExtraPreload is appended to the page's preload script, after the drag
-	// shim. The acceptance probe uses it to record page errors.
-	ExtraPreload string
-	// Ready, when set, runs on the main thread once the window exists, before
-	// the window is shown. It is how the acceptance probe reaches the page.
-	Ready func(w *mygo.Window)
+	// Hidden starts the app without showing the window, which is what a
+	// menu bar app does when it is opened at login: the tray icon is there,
+	// the window is not. magpie's `tray` launch asks for this.
+	Hidden bool
+	// NoTray leaves the menu bar icon out. A test or a probe sets it: a run
+	// must not leave an icon behind in the reader's menu bar.
+	NoTray bool
+	// NoBackend leaves the gateway out, for a run that must not serve.
+	NoBackend bool
+	// Ready, when set, runs on the main thread once the window exists,
+	// before it is shown.
+	Ready func(a *App, w *mygo.Window)
 }
 
-// Run starts the app: it serves magpie's page and API through MyGo's scheme and
-// opens the window. It blocks until the app quits and must be called from main.
+// Run starts Echo: it reads magpie's settings, starts what serves the agents,
+// opens the window and the menu bar icon, and blocks until the app quits.
+//
+// It must be called from main: MyGo runs its event loop on the main goroutine.
 func Run(opts Options) error {
-	if opts.URL == "" {
-		opts.URL = "/"
-	}
 	if opts.Width == 0 {
 		opts.Width, opts.Height = 1180, 780
+	}
+	if opts.Page == "" {
+		opts.Page = PageAgents
 	}
 
 	mygo.App.SetName("Echo")
 
-	// magpie's page, its /api/* routes and its /boot.js are served from one
-	// handler. The page reaches Go over fetch("/api/…") on its own origin, so a
-	// single scheme handler carries both the frontend and the API.
-	if err := mygo.Protocol.Handle("mygo", Handler(gui.Handler(Host{}, nil))); err != nil {
-		return err
+	a := newApp(opts.Page, mygo.App.Locale())
+	setCurrent(a)
+
+	// The gateway starts before the window, as magpie's own app starts it:
+	// it is the product's reason to exist, and an agent may be waiting on
+	// the address. It is also what makes the app a menu bar app rather than
+	// a window that happens to open.
+	if !opts.NoBackend {
+		go gui.StartBackend()
 	}
 
 	mygo.App.WhenReady(func() {
-		w := mygo.NewWindow(mygo.WindowOptions{
-			Title:     "Echo",
-			URL:       opts.URL,
+		a.win = mygo.NewWindow(mygo.WindowOptions{
+			Title:     a.text.S.AppName,
 			Width:     opts.Width,
 			Height:    opts.Height,
-			MinWidth:  900,
+			MinWidth:  820,
 			MinHeight: 560,
-			Page:      mygo.PageOptions{PreloadScript: dragShim + opts.ExtraPreload},
+			// StateKey keeps the window's size and place across runs, as
+			// magpie keeps its own window's.
+			StateKey: "echo",
+			Content:  ui.View(a.view),
 		})
-		SetMain(w)
-		if opts.Ready != nil {
-			opts.Ready(w)
+		// Closing the window hides it rather than ending the app, which is
+		// what a menu bar app does: the tray icon brings it back.
+		a.win.OnClose(func(e *mygo.CloseEvent) {
+			if !a.quitting {
+				e.PreventDefault()
+				a.Hide()
+			}
+		})
+		a.win.SetMenu(a.menu())
+
+		if !opts.NoTray {
+			// A tray that cannot be made is not fatal: the window still
+			// works, and the failure is reported rather than swallowed.
+			if err := a.makeTray(); err != nil {
+				log.Printf("echo: menu bar icon: %v", err)
+			}
 		}
+
+		if opts.Ready != nil {
+			opts.Ready(a, a.win)
+		}
+		if !opts.Hidden {
+			a.win.Show()
+		}
+		// The pages' data is read after the window is up, so the window
+		// appears at once and fills in as the read lands.
+		a.Reload()
 	})
 
+	// The gateway is given back on the way out, so the next launch — or the
+	// magpie that takes over — finds the port free rather than a socket
+	// closing under it.
+	if !opts.NoBackend {
+		mygo.App.OnWillQuit(func(_ *mygo.QuitEvent) {
+			a.quitting = true
+			gui.StopBackend()
+		})
+	}
+
 	return mygo.App.Run()
+}
+
+// menu is the application menu: the standard menus, with Echo's own About.
+//
+// MyGo installs a default menu when none is set; this one names the app and
+// offers the pages, so the reader can reach a page from the menu bar as well
+// as from the sidebar.
+func (a *App) menu() *mygo.Menu {
+	var pages []*mygo.MenuItem
+	for _, info := range a.Pages() {
+		page := info.Page
+		pages = append(pages, &mygo.MenuItem{
+			Label: info.Title,
+			Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.Show(page) },
+		})
+	}
+
+	return mygo.NewMenu([]*mygo.MenuItem{
+		{
+			Label: a.text.S.AppName,
+			Submenu: []*mygo.MenuItem{
+				{Role: mygo.RoleAbout},
+				{Type: mygo.MenuItemSeparator},
+				{Role: mygo.RoleServices},
+				{Type: mygo.MenuItemSeparator},
+				{Role: mygo.RoleHide},
+				{Role: mygo.RoleHideOthers},
+				{Role: mygo.RoleUnhide},
+				{Type: mygo.MenuItemSeparator},
+				{Role: mygo.RoleQuit, Label: a.text.S.Quit},
+			},
+		},
+		{
+			Label: a.text.S.AppName,
+			Submenu: []*mygo.MenuItem{
+				{Label: a.text.S.Show, Accelerator: "CmdOrCtrl+Shift+O", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.Show("") }},
+				{Label: a.text.S.Hide, Accelerator: "CmdOrCtrl+W", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.Hide() }},
+			},
+		},
+		{Label: a.text.S.Settings, Submenu: pages},
+		{Role: mygo.RoleEditMenu},
+		{Role: mygo.RoleWindowMenu},
+	})
 }

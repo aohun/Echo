@@ -25,9 +25,16 @@ import (
 // takeEdits takes into the library the newest edit made in an agent's copy
 // of each of its skills, before the sync gives the library's to the agents.
 func (l *Library) takeEdits(targets []*Target, res *Result) {
+	failed := func(agent, name, p string, err error) {
+		res.fail(agent, "skill:"+name, err)
+		if l.blockedSkills == nil {
+			l.blockedSkills = map[string]bool{}
+		}
+		l.blockedSkills[realDir(p)] = true
+	}
 	for _, s := range l.Skills {
 		lib := realDir(skillDir(s.Name))
-		if hashDir(lib) == "" {
+		if l.libHash(s.Name) == "" {
 			continue
 		}
 		type edit struct {
@@ -49,8 +56,19 @@ func (l *Library) takeEdits(targets []*Target, res *Result) {
 			if !ok {
 				continue
 			}
-			at := changedAt(p)
-			if !at.After(made) || sameTree(p, lib) {
+			at, err := changedAt(p)
+			if err != nil {
+				failed(t.Agent.ID, s.Name, p, err)
+				continue
+			}
+			if !at.After(made) {
+				if l.untouched == nil {
+					l.untouched = map[string]bool{}
+				}
+				l.untouched[p] = true
+				continue
+			}
+			if sameTree(p, lib) {
 				continue
 			}
 			edits = append(edits, edit{t.Agent.ID, p, at})
@@ -60,8 +78,15 @@ func (l *Library) takeEdits(targets []*Target, res *Result) {
 		}
 		// the newest edit, unless the library changed after it
 		slices.SortStableFunc(edits, func(a, b edit) int { return b.at.Compare(a.at) })
+		at, err := changedAt(lib)
+		if err != nil {
+			for _, e := range edits {
+				failed(e.agent, s.Name, e.path, err)
+			}
+			continue
+		}
 		won := -1
-		if edits[0].at.After(changedAt(lib)) {
+		if edits[0].at.After(at) {
 			won = 0
 		}
 		if won == 0 {
@@ -71,7 +96,9 @@ func (l *Library) takeEdits(targets []*Target, res *Result) {
 				res.fail(e.agent, "skill:"+s.Name, err)
 				continue
 			}
-			if err := mirrorDir(e.path, lib); err != nil {
+			err := mirrorDir(e.path, lib)
+			delete(l.hashes, s.Name)
+			if err != nil {
 				res.fail(e.agent, "skill:"+s.Name, err)
 				continue
 			}
@@ -111,12 +138,12 @@ func copiedAt(p string) (time.Time, bool) {
 // changedAt is when anything in the folder last changed: the newest time
 // of what is in it, a file or a folder (one taken away changes its
 // folder's), leaving aside magpie's mark and what Finder or version
-// control keep in it.
-func changedAt(dir string) time.Time {
+// control keep in it. An incomplete walk can't establish when it changed.
+func changedAt(dir string) (time.Time, error) {
 	var at time.Time
-	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return err
 		}
 		if p != dir && skipInSkill(d.Name()) {
 			if d.IsDir() {
@@ -124,12 +151,16 @@ func changedAt(dir string) time.Time {
 			}
 			return nil
 		}
-		if fi, err := d.Info(); err == nil && fi.ModTime().After(at) {
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if fi.ModTime().After(at) {
 			at = fi.ModTime()
 		}
 		return nil
 	})
-	return at
+	return at, err
 }
 
 func skipInSkill(name string) bool {

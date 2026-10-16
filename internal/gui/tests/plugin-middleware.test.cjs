@@ -59,7 +59,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.route("**/*", server(lang));
         await page.goto("http://magpie.test/?view=plugins");
         const view = page.locator("#view-plugins");
-        await view.locator(".lib-tabs .opt", { hasText: w.installed }).click();
+        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.installed }).click();
         const row = (name) => view.locator(".pm-row").filter({ has: page.locator(".name", { hasText: name }) });
 
         const alias = row("alias.middleware.js");
@@ -99,12 +99,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
   // Discover says plugins can be middleware too, not only subscriptions,
   // and links to how one is written in the reader's language
-  test(engine + ": Discover's intro names middleware", async (t) => {
+  test(engine + ": Discover's intro names what a plugin can be, and how to write one", async (t) => {
     const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
     t.after(() => browser.close());
     const I = {
-      en: { h: "Subscriptions and gateway middleware", p: /middleware in magpie's gateway/, a: "Write a middleware", url: "https://usemagpie.ai/docs/plugins#middleware", trust: /sign-in or your requests/ },
-      zh: { h: "订阅与网关中间件", p: /magpie 网关里的中间件/, a: "编写中间件", url: "https://usemagpie.ai/docs/zh/plugins#middleware", trust: /登录或看到你的请求/ },
+      en: { h: "Plugins extend magpie", p: /run in magpie's gateway .* give every agent tools, connect an agent, or add a page of its own/, a: "Write a plugin", url: "https://usemagpie.ai/docs/plugins", trust: /sign-in or your requests/ },
+      zh: { h: "插件扩展 magpie", p: /在 magpie 网关里处理.*给每个 Agent 提供工具.*加一个自己的页面/, a: "编写插件", url: "https://usemagpie.ai/docs/zh/plugins", trust: /登录或看到你的请求/ },
     };
     for (const lang of ["en", "zh"]) {
       await t.test(lang, async () => {
@@ -159,7 +159,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         });
         await page.goto("http://magpie.test/?view=plugins");
         const view = page.locator("#view-plugins");
-        await view.locator(".lib-tabs .opt", { hasText: w.installed }).click();
+        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.installed }).click();
         const row = (name) => view.locator(".pm-row").filter({ has: page.locator(".name", { hasText: name }) });
         const alias = row("alias.middleware.js");
         await alias.waitFor();
@@ -239,6 +239,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const card = (n) => page.locator("#view-plugins .pm-card").filter({ hasText: n });
         assert.equal((await card("Zed").locator(".pm-chip.kind").innerText()).trim(), w.pv);
         assert.equal((await card("Model map").locator(".pm-chip.kind").innerText()).trim(), w.mwc);
+        // each kind its own hue (yetone: 中间件和供应商稍微有点区分吧)
+        const hue = (n) => card(n).locator(".pm-chip.kind").evaluate((e) => getComputedStyle(e).color);
+        assert.notEqual(await hue("Zed"), await hue("Model map"));
         assert.equal(await secs.nth(1).locator(".pm-card").count(), 1);
         if (process.env.ARTIFACT_DIR) await page.locator("#view-plugins").screenshot({ path: path.join(process.env.ARTIFACT_DIR, `plugin-kinds-${engine}-${lang}.png`) });
         assert.deepEqual(errors, []);

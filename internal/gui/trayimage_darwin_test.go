@@ -21,7 +21,7 @@ func TestTrayImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cells, _, _ := trayUsageView(trayCards(), time.Now(), false)
+	cells, _, _ := trayUsageView(trayCards(), time.Now(), false, false)
 	out := os.Getenv("MAGPIE_TRAY_PREVIEW")
 	widths := map[bool][]int{}
 	for _, dark := range []bool{false, true} {
@@ -88,7 +88,7 @@ func TestTrayImageCellAt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cells, _, _ := trayUsageView(trayCards(), time.Now(), false)
+	cells, _, _ := trayUsageView(trayCards(), time.Now(), false, false)
 	const h = 22.0
 	_, w, _ := trayImagePNG(cells, bird, h, 2, false, false)
 	width := float64(w) / 2
@@ -231,19 +231,19 @@ func TestTrayImageClickIdentity(t *testing.T) {
 	onTrayCellClick = func(id string) { clicked <- id }
 	cards := trayCards()
 	cards[1].User = "a\"b\\c@例子.test"
-	cells, _, _ := trayUsageView(cards, time.Now(), false)
+	cells, _, _ := trayUsageView(cards, time.Now(), false, false)
 	for _, layout := range [][]trayCell{cells, trayPlain(cells)} {
-		if trayImageClickAt(layout, 22, 5, 0) {
+		if trayImageClickAt(layout, true, 22, 5, 0) {
 			t.Fatal("bird intercepted")
 		}
 		x := trayImageCellStart(layout, 22, 1) + 1
 		// AppKit's Shift, Control, Option and Command modifier bits.
 		for _, modifiers := range []uint64{1 << 17, 1 << 18, 1 << 19, 1 << 20} {
-			if trayImageClickAt(layout, 22, x, modifiers) {
+			if trayImageClickAt(layout, true, 22, x, modifiers) {
 				t.Fatal("modified click intercepted")
 			}
 		}
-		if !trayImageClickAt(layout, 22, x, 0) {
+		if !trayImageClickAt(layout, true, 22, x, 0) {
 			t.Fatal("cell missed")
 		}
 		select {
@@ -254,5 +254,29 @@ func TestTrayImageClickIdentity(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("native click callback lost")
 		}
+	}
+}
+
+// Without the bird the cards are the whole item: a click anywhere on them is
+// the item's own, which opens the panel on the tab left last, not
+// Allowances (the owner: with the bird off, every click opened Allowances).
+func TestTrayImageClickWithoutBird(t *testing.T) {
+	prior := onTrayCellClick
+	t.Cleanup(func() { onTrayCellClick = prior })
+	clicked := make(chan string, 1)
+	onTrayCellClick = func(id string) { clicked <- id }
+	cells, _, _ := trayUsageView(trayCards(), time.Now(), false, false)
+	for _, layout := range [][]trayCell{cells, trayPlain(cells)} {
+		for i := range layout {
+			x := trayImageCellStart(layout, 22, i) - (22 + 2) + 1 // the same cell, with no bird before it
+			if trayImageClickAt(layout, false, 22, x, 0) {
+				t.Fatalf("cell %d taken for its card with no bird", i)
+			}
+		}
+	}
+	select {
+	case id := <-clicked:
+		t.Fatalf("card %q opened", id)
+	default:
 	}
 }

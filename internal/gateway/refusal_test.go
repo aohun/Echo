@@ -203,7 +203,8 @@ func TestContentFilterFailsOver(t *testing.T) {
 
 // With nobody else to ask, the agent is told it was refused, as a request
 // not to send again as it is — not handed an empty reply that looks whole —
-// and the usage says it failed.
+// and the usage says it failed. An agent on Anthropic's API has the
+// vendor's refusal itself, which says so in its own words.
 func TestRefusalWithNobodyLeftIsAnError(t *testing.T) {
 	fresh(t)
 	a := &scripted{replies: []reply{{200, "text/event-stream", anthropicRefusal}}}
@@ -221,12 +222,14 @@ func TestRefusalWithNobodyLeftIsAnError(t *testing.T) {
 		t.Fatalf("route: %+v", r)
 	}
 
-	// a model asked by its own name, on Anthropic's API
+	// a model asked by its own name, on Anthropic's API: the vendor's
+	// refusal as it said it, for Claude Code to switch to its fallback
+	// model on, which a 400 isn't to it (DD on Discord)
 	fresh(t)
 	a = &scripted{replies: []reply{{200, "text/event-stream", anthropicRefusal}}}
 	scriptedOn(t, "a", provider.Anthropic, a)
 	code, body = sendTo(New(), "/v1/messages", `{"model":"a/m","max_tokens":10,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
-	if code != 400 || !strings.Contains(body, `"invalid_request_error"`) || !strings.Contains(body, "refused this request") || a.n != 1 {
+	if code != 200 || !strings.Contains(body, `"stop_reason":"refusal"`) || !strings.Contains(body, "message_stop") || strings.Contains(body, "refused this request") || a.n != 1 {
 		t.Fatalf("messages: %d %s (a %d)", code, body, a.n)
 	}
 
@@ -284,6 +287,35 @@ func TestRefusalAfterContentPassesThrough(t *testing.T) {
 	}
 }
 
+// A safety filter's refusal that arrives once the reply has begun goes to
+// the agent as it came — nobody else is asked, the reply already reached
+// it — and it is the vendor refusing the turn, as one before anything was
+// said is: nobody rests for it, and the account is asked again as any
+// other (#248).
+func TestRefusalMidReplyRestsNobody(t *testing.T) {
+	fresh(t)
+	late := sse(`data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":"half"}}]}`,
+		`data: {"error":{"code":"content_filter","message":"The response was filtered"}}`,
+		`data: [DONE]`)
+	a := &scripted{replies: []reply{{200, "text/event-stream", late}}}
+	b := &scripted{replies: []reply{{200, "", chatOK}}}
+	scriptedOn(t, "a", provider.Chat, a)
+	scriptedOn(t, "b", provider.Chat, b)
+	refusalGroup(t, "a/m", "b/m")
+	s := New()
+	code, body := sendTo(s, "/v1/chat/completions", `{"model":"group/g","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 || !strings.Contains(body, "half") || !strings.Contains(body, "content_filter") || b.n != 0 {
+		t.Fatalf("chat: %d %s (b %d)", code, body, b.n)
+	}
+	r := s.trace.routes[len(s.trace.routes)-1]
+	if len(r.Tries) != 1 || r.Tries[0].Fail != failRefused || r.Tries[0].Rest != nil || r.Tries[0].Status != 200 {
+		t.Fatalf("tries: %+v", r.Tries)
+	}
+	if s.resting("a") {
+		t.Fatal("a refusal after content set the member aside")
+	}
+}
+
 func TestStreamEventRefusals(t *testing.T) {
 	for _, x := range []struct {
 		ev   string
@@ -312,7 +344,7 @@ func TestStreamEventRefusals(t *testing.T) {
 		{`data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"content_filter"}}}`, eventRefusal},
 		{`data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}`, eventContent},
 		{`data: {"type":"response.completed","response":{"status":"completed"}}`, eventContent},
-		{`data: {"type":"error","error":{"code":"content_filter","message":"filtered"}}`, eventRefusal},
+		{`data: {"type":"error","error":{"code":"content_filter","message":"filtered"}}`, eventRefusalError},
 		{`data: {"candidates":[{"content":{"parts":[]},"finishReason":"SAFETY"}]}`, eventRefusal},
 		{`data: {"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"SAFETY"}]}`, eventContent},
 		{`data: {"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}`, eventContent},

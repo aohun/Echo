@@ -31,7 +31,7 @@ func keepFast(t *testing.T, gap, every, longest time.Duration) {
 func TestTranslatedStreamKeepsClientAlive(t *testing.T) {
 	keepFast(t, 10*time.Millisecond, keepaliveEvery, keepaliveLongest)
 	for _, c := range []struct {
-		name, path, body, done, ping string
+		name, path, body, done, ping string // done: the reply's last event
 		upChat                       bool
 		comments                     bool // the client counts a comment as life
 	}{
@@ -40,7 +40,7 @@ func TestTranslatedStreamKeepsClientAlive(t *testing.T) {
 		{"chat_to_anthropic", "/v1/messages", `{"model":"fake/m1","stream":true,"max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`,
 			`"type":"message_stop"`, `"type":"ping"`, true, false},
 		{"responses_to_chat", "/v1/chat/completions", `{"model":"fake/m1","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
-			`"finish_reason":"stop"`, ": keepalive", false, true},
+			"data: [DONE]", ": keepalive", false, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			fresh(t)
@@ -112,7 +112,16 @@ func TestTranslatedStreamKeepsClientAlive(t *testing.T) {
 			}()
 			idle := time.NewTimer(150 * time.Millisecond)
 			defer idle.Stop()
-			timedOut, completed, pings := false, false, 0
+			// the client's idle timeout, until it has the whole reply. What
+			// the gateway does after that before the stream closes (the
+			// usage ledger, affinity, served) is no wait a client's idle
+			// timeout counts: Codex hangs up on response.completed, and the
+			// clients that read on to the close wait minutes, not 150ms.
+			// Then the stream closes within closeAfterLast, or the test
+			// fails rather than hangs.
+			const closeAfterLast = 5 * time.Second
+			wait := idle.C
+			timedOut, completed, unclosed, pings := false, false, false, 0
 			// openai-go v2 (Crush) reads every blank line as an event and
 			// fails on one with no data: "unexpected end of JSON input"
 			data, empty := false, 0
@@ -134,19 +143,22 @@ func TestTranslatedStreamKeepsClientAlive(t *testing.T) {
 					} else if strings.HasPrefix(line, "data:") {
 						data = true
 					}
-					if strings.Contains(line, c.done) {
-						completed = true
+					if strings.Contains(line, c.done) && !completed {
+						completed, wait = true, time.After(closeAfterLast)
 					}
 					// what the client's idle timeout counts
 					if strings.HasPrefix(line, "data:") || (c.comments && strings.HasPrefix(line, ":")) {
 						idle.Reset(150 * time.Millisecond)
 					}
-				case <-idle.C:
-					timedOut = true
+				case <-wait:
+					timedOut, unclosed = !completed, completed
 					break read
 				}
 			}
 			cancel()
+			if unclosed {
+				t.Fatalf("the stream didn't close within %v of its last event", closeAfterLast)
+			}
 			t.Logf("upstream_keepalives=%d downstream_keepalives=%d idle_timeout=%v completed=%v", upPings.Load(), pings, timedOut, completed)
 			if timedOut || !completed || pings < 3 {
 				t.Fatal("the client wasn't kept alive while the provider was")
@@ -181,7 +193,10 @@ func TestTranslatedSilenceStillTimesOut(t *testing.T) {
 	}
 	server := httptest.NewServer(New().Handler())
 	defer server.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	// The client's idle timeout is over the body: it starts once the
+	// headers are in, so that a loaded machine's slow first byte isn't
+	// taken for it (#2248). 400ms is 40 keepalive gaps.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "POST", server.URL+"/v1/responses", strings.NewReader(`{"model":"fake/m1","stream":true,"input":"hi"}`))
 	res, err := http.DefaultClient.Do(req)
@@ -189,6 +204,8 @@ func TestTranslatedSilenceStillTimesOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer res.Body.Close()
+	idle := time.AfterFunc(400*time.Millisecond, cancel)
+	defer idle.Stop()
 	b, _ := io.ReadAll(res.Body)
 	if n := strings.Count(string(b), `"type":"response.in_progress"`); n > 1 {
 		t.Fatalf("a silent provider was covered for: %d in_progress events\n%s", n, b)
@@ -213,7 +230,7 @@ func TestRelayKeepsClientAlive(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := &Request{Model: "m1", Stream: true}
 	r := httptest.NewRequest("POST", "/v1/messages", nil)
-	code, failed := relay(rec, r, provider.Anthropic, "Bridge", req, events, &Usage{}, func() {}, func(string, string, bool) {})
+	code, failed := relay(rec, r, provider.Anthropic, "Bridge", req, events, &Usage{}, func() {}, nil, func(string, string, bool) {})
 	if code != 200 || failed != "" {
 		t.Fatalf("relay: %d %q", code, failed)
 	}

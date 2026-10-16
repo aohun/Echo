@@ -14,5 +14,4 @@ func devListen(http.Handler)                      {}
 func devPage(h http.Handler) http.Handler         { return h }
 func devRole() string                             { return "" }
 func devBackend(func(Windows) http.Handler) error { return nil }
-func devUIOn() bool                               { return false }
 func stash(link string) string                    { return stashImport(link) }

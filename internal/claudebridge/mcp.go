@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 )
@@ -62,6 +63,15 @@ func RunMCP(args []string) error {
 		return errors.New("claude MCP helper expects callback URL and tools file")
 	}
 	callbackURL, toolsPath := args[0], args[1]
+	if !strings.HasPrefix(callbackURL, "http://") && !strings.HasPrefix(callbackURL, "https://") {
+		// the file magpie wrote it in, which keeps its token off the
+		// command line
+		b, err := os.ReadFile(callbackURL)
+		if err != nil {
+			return err
+		}
+		callbackURL = strings.TrimSpace(string(b))
+	}
 	b, err := os.ReadFile(toolsPath)
 	if err != nil {
 		return err
@@ -71,7 +81,15 @@ func RunMCP(args []string) error {
 		return fmt.Errorf("read MCP tools: %w", err)
 	}
 
-	client := &http.Client{} // a tools/call intentionally blocks until the agent returns its result
+	// a tools/call intentionally blocks until the agent returns its result.
+	// The callback is magpie on this computer, never through a proxy: the
+	// agent hands down the *_PROXY magpie gave it for its vendor, and a
+	// gateway on a LAN or Tailscale address isn't in its NO_PROXY, so the
+	// call went to the proxy, which reset it or couldn't reach back, and
+	// the tool call never reached the run (#2440).
+	direct := http.DefaultTransport.(*http.Transport).Clone()
+	direct.Proxy = nil
+	client := &http.Client{Transport: direct}
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 64<<10), 16<<20)
 	enc := json.NewEncoder(os.Stdout)

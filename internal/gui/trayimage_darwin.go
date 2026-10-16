@@ -6,6 +6,7 @@ package gui
 #cgo CFLAGS: -x objective-c
 #cgo LDFLAGS: -framework AppKit
 #include <stdlib.h>
+#include <string.h>
 #import <Cocoa/Cocoa.h>
 
 typedef struct {
@@ -303,7 +304,12 @@ static CGFloat mpHitW = 0;
 
 // Used by the single status-item monitor and native tests. Modified clicks
 // retain the button's normal action; an unmodified quota click uses its ID.
-static BOOL mpClickCell(NSArray *cells, CGFloat in, CGFloat x, CGFloat w, NSEventModifierFlags flags) {
+// Shown without the bird, the cards are the whole item, and a click on them
+// is the item's own: it opens the panel on the tab left last, as a click on
+// the bird does (the owner: with the bird off, every click opened Allowances,
+// since there was nowhere left to click that didn't).
+static BOOL mpClickCell(NSArray *cells, BOOL bird, CGFloat in, CGFloat x, CGFloat w, NSEventModifierFlags flags) {
+	if (!bird) return NO;
 	if (flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagShift)) return NO;
 	int i = mpCellAt(cells, in, x, w);
 	if (i < 0) return NO;
@@ -371,6 +377,39 @@ static int mpFrame(const void *bird, int len) {
 	return ok;
 }
 
+// mpTipOn is the button's tooltip, none for "": the text as given, its
+// lines kept, as AppKit shows a tooltip's.
+static void mpTipOn(NSStatusBarButton *b, NSString *s) {
+	b.toolTip = s.length ? s : nil;
+}
+
+// mpTip puts the tooltip on magpie's status item; 0 while the item isn't
+// up yet. Wails (v3.0.0-beta.24) leaves SetTooltip a no-op on macOS
+// ("Tooltips not supported on macOS").
+static int mpTip(const char *tip) {
+	__block int ok = 0;
+	@autoreleasepool {
+		NSString *s = [NSString stringWithUTF8String:tip];
+		dispatch_sync(dispatch_get_main_queue(), ^{
+			NSStatusBarButton *b = mpButton();
+			if (b == nil) return;
+			mpTipOn(b, s);
+			ok = 1;
+		});
+	}
+	return ok;
+}
+
+// mpTipShown is the tooltip a status bar button given tip shows, for
+// tests, which have no status item nor main queue to ask.
+static char *mpTipShown(const char *tip) {
+	@autoreleasepool {
+		NSStatusBarButton *b = [[[NSStatusBarButton alloc] initWithFrame:NSMakeRect(0, 0, 22, 22)] autorelease];
+		mpTipOn(b, [NSString stringWithUTF8String:tip]);
+		return strdup(b.toolTip ? b.toolTip.UTF8String : "");
+	}
+}
+
 // mpHide forgets the cells; the icon Wails sets next puts the bird back.
 static void mpHide(void) {
 	dispatch_async(dispatch_get_main_queue(), ^{
@@ -406,7 +445,7 @@ static void mpOwnClicks(void) {
 				// Route quota clicks before the generic action, within this
 				// one monitor; local monitor ordering is not guaranteed.
 				CGFloat x = p.x - (b.bounds.size.width - mpHitW) / 2;
-				if (mpClickCell(mpShown, mpIn(mpBird, [[NSStatusBar systemStatusBar] thickness]), x, mpHitW, e.modifierFlags)) return nil;
+				if (mpClickCell(mpShown, mpBird != nil, mpIn(mpBird, [[NSStatusBar systemStatusBar] thickness]), x, mpHitW, e.modifierFlags)) return nil;
 				[NSApp sendAction:b.action to:b.target from:b];
 				return nil;
 			}];
@@ -472,10 +511,11 @@ static CGFloat mpCellStartAt(mpTrayCell *cells, int n, CGFloat h, int i) {
 }
 
 // Exercise the same identity lookup and C-to-Go callback without a live status item.
-static int mpClickCellsAt(mpTrayCell *cells, int n, CGFloat h, CGFloat x, unsigned long flags) {
+static int mpClickCellsAt(mpTrayCell *cells, int n, int bird, CGFloat h, CGFloat x, unsigned long flags) {
 	@autoreleasepool {
 		NSArray *cs = mpCells(cells, n);
-		return mpClickCell(cs, h + mpBirdGap, x, mpWidth(cs, h, h + mpBirdGap), flags);
+		CGFloat in = bird ? h + mpBirdGap : 0;
+		return mpClickCell(cs, bird, in, x, mpWidth(cs, h, in), flags);
 	}
 }
 
@@ -550,6 +590,24 @@ func trayImageFrame(bird []byte) bool {
 	return C.mpFrame(b, n) != 0
 }
 
+// trayTipNative puts the tooltip on the menu bar item, where Wails' own
+// SetTooltip does nothing; false while the item isn't up yet, to be tried
+// again. A var for tests, which have no main queue for it to wait on.
+var trayTipNative = func(tip string) bool {
+	cs := C.CString(tip)
+	defer C.free(unsafe.Pointer(cs))
+	return C.mpTip(cs) != 0
+}
+
+// trayTipShown is the tooltip a menu bar button given tip shows.
+func trayTipShown(tip string) string {
+	cs := C.CString(tip)
+	defer C.free(unsafe.Pointer(cs))
+	out := C.mpTipShown(cs)
+	defer C.free(unsafe.Pointer(out))
+	return C.GoString(out)
+}
+
 // trayImageHide takes the cells down; the icon set next is the bird alone.
 func trayImageHide() { C.mpHide() }
 
@@ -604,10 +662,14 @@ func trayImageCellStart(cells []trayCell, h float64, i int) float64 {
 	return s
 }
 
-func trayImageClickAt(cells []trayCell, h, x float64, modifiers uint64) bool {
+func trayImageClickAt(cells []trayCell, bird bool, h, x float64, modifiers uint64) bool {
 	hit := false
+	b := C.int(0)
+	if bird {
+		b = 1
+	}
 	withCells(cells, func(cs *C.mpTrayCell, count C.int) {
-		hit = C.mpClickCellsAt(cs, count, C.CGFloat(h), C.CGFloat(x), C.ulong(modifiers)) != 0
+		hit = C.mpClickCellsAt(cs, count, b, C.CGFloat(h), C.CGFloat(x), C.ulong(modifiers)) != 0
 	})
 	return hit
 }

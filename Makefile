@@ -37,30 +37,28 @@ endif
 build:
 	go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o magpie .
 
-# echo is the MyGo shell (cmd/echo). It is built with -tags nogui, because
-# magpie's internal/gui only compiles without Wails under that tag, and under
-# it magpie's own GUI entry point is absent — which is what the shell replaces.
+# echo is Echo's desktop app. It is the root binary with -tags "nogui,echo":
+# nogui because magpie's internal/gui only compiles without Wails under that
+# tag, and echo because that is what selects the MyGo shell in place of
+# magpie's own window.
+#
+# It is the root binary rather than a command under cmd/ because magpie's
+# TestPluginsImportOnlyCore allows main.go alone to gather the built-in
+# plugins: a second entry point would either break that rule or run without
+# the gateway and the plugin-backed features.
 echo:
-	go build -tags nogui -o echo ./cmd/echo
+	CGO_ENABLED=0 go build -tags "nogui,echo" -o echo .
 
-# probe is the shell's acceptance check: it starts the shell, walks magpie's
-# eight views in the real window, and reports what each rendered. It runs under
-# a home of its own, with failing stand-ins for the agent CLIs on PATH, so it
-# never reads a real agent config (~/.codex, ~/.claude, ~/.config/magpie) —
-# the rule magpie's own tests follow. macOS only: it needs a desktop session.
-PROBE_HOME ?= /tmp/echo-probe-home
-PROBE_TOOLS = claude codex opencode gemini cursor-agent
+# probe is the shell's acceptance check. It renders every page of the shell
+# without a display and reports what each showed, so it needs no desktop
+# session and runs anywhere. It runs under a home of its own, with failing
+# stand-ins for the agent CLIs on PATH, so it never reads a real agent config
+# (~/.codex, ~/.claude, ~/.config/magpie) — the rule magpie's own tests follow
+# (risk O12 in docs/06-open-questions-and-risks.md).
 probe:
-	rm -rf "$(PROBE_HOME)"
-	mkdir -p "$(PROBE_HOME)/bin" "$(PROBE_HOME)/.config" "$(PROBE_HOME)/.cache" \
-	         "$(PROBE_HOME)/.local/share" "$(PROBE_HOME)/.local/state"
-	for t in $(PROBE_TOOLS); do printf '#!/bin/sh\nexit 1\n' > "$(PROBE_HOME)/bin/$$t"; chmod +x "$(PROBE_HOME)/bin/$$t"; done
-	go build -tags nogui -o "$(PROBE_HOME)/echoprobe" ./cmd/echoprobe
-	env -i HOME="$(PROBE_HOME)" USERPROFILE="$(PROBE_HOME)" \
-	       XDG_CONFIG_HOME="$(PROBE_HOME)/.config" XDG_CACHE_HOME="$(PROBE_HOME)/.cache" \
-	       XDG_DATA_HOME="$(PROBE_HOME)/.local/share" XDG_STATE_HOME="$(PROBE_HOME)/.local/state" \
-	       PATH="$(PROBE_HOME)/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-	       "$(PROBE_HOME)/echoprobe" -out "$(PROBE_HOME)/report.json"
+	ECHO_PROBE_OUT="$${TMPDIR:-/tmp}/echo-probe.json" \
+		go test -tags "nogui,echo" -count=1 -run TestProbe -v ./internal/shell/
+	@echo "  report: $${TMPDIR:-/tmp}/echo-probe.json"
 
 cli:
 	CGO_ENABLED=0 go build -tags nogui -trimpath -ldflags="$(LDFLAGS)" -o magpie .

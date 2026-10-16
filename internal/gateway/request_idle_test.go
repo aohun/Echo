@@ -23,7 +23,7 @@ func TestRequestBodyProgressRenewsIdleDeadline(t *testing.T) {
 			s := New()
 			s.requestLimits.readTimeout = 200 * time.Millisecond
 			gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, ok := s.readRequestBody(w, r, provider.Responses, codexReader, 0)
+				body, ok := s.readRequestBody(w, r, provider.Responses, 0)
 				if !ok {
 					return
 				}
@@ -124,6 +124,8 @@ func TestBodyRejectionErrorShapes(t *testing.T) {
 		want   string
 	}{
 		{provider.Anthropic, 413, `"type":"request_too_large"`},
+		{provider.Chat, 413, `"type":"request_too_large"`},
+		{provider.Responses, 413, `"type":"request_too_large"`},
 		{provider.Gemini, 413, `"status":"INVALID_ARGUMENT"`},
 		{provider.Gemini, 408, `"status":"DEADLINE_EXCEEDED"`},
 	} {

@@ -48,6 +48,8 @@ func (s *Server) serveKiro(w http.ResponseWriter, r *http.Request, from provider
 	if err != nil {
 		return writeError(w, from, 400, err.Error()), err.Error()
 	}
+	// the vendor's own API is told the answer's format in words
+	req = req.inSystem()
 	req.Model = model
 	ask := s.askKiro(p, model)
 	if req.WebSearch && !searching(r.Context()) {
@@ -61,7 +63,7 @@ func (s *Server) serveKiro(w http.ResponseWriter, r *http.Request, from provider
 	if events == nil {
 		return writeError(w, from, status, msg), msg
 	}
-	return relay(w, r, from, "Kiro", req, events, usage, cancel, func(string, string, bool) {})
+	return relay(w, r, from, "Kiro", req, events, usage, cancel, nil, func(string, string, bool) {})
 }
 
 // askKiro is a round for Kiro's API.
@@ -122,7 +124,11 @@ func (s *Server) sendKiro(ctx context.Context, auth provider.KiroAuth, body []by
 	} {
 		req.Header.Set(k, v)
 	}
-	return s.client.Do(req)
+	res, err := s.client.Do(req)
+	if err != nil {
+		return res, err
+	}
+	return notAnAPIReply(res, ""), nil // a web page served 200 (#1012)
 }
 
 // kiroFailure is the status and message for an error Kiro answered with:
@@ -188,6 +194,13 @@ type kiroUser struct {
 	Origin  string       `json:"origin"`
 	Images  []kiroImage  `json:"images,omitempty"`
 	Context *kiroUserCtx `json:"userInputMessageContext,omitempty"`
+	// Bedrock's cache point: Kiro caches the prompt up to the end of this
+	// message (the CodeWhisperer streaming model's UserInputMessage.cachePoint)
+	CachePoint *kiroCachePoint `json:"cachePoint,omitempty"`
+}
+
+type kiroCachePoint struct {
+	Type string `json:"type"`
 }
 
 type kiroUserCtx struct {
@@ -465,6 +478,15 @@ func buildKiro(r *Request, model, profile string, thinking bool) []byte {
 	if system != "" {
 		entries[0].User.Content = system + "\n\n" + entries[0].User.Content
 	}
+	// Kiro caches a prompt only up to a message marked for it, as Anthropic
+	// does (buildAnthropic): the first message, which holds the
+	// instructions, the same every turn, and the message being answered, so
+	// the next turn, which only adds to the conversation, reads it from the
+	// cache (magpie-community/plugins#110: a cache rate of 0)
+	if r.System != "" {
+		entries[0].User.CachePoint = &kiroCachePoint{Type: "default"}
+	}
+	entries[len(entries)-1].User.CachePoint = &kiroCachePoint{Type: "default"}
 
 	// the caller's tools, and any the conversation used that it no longer
 	// offers — Kiro rejects a history naming a tool it wasn't given
