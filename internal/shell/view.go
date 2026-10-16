@@ -54,6 +54,16 @@ func (a *App) sidebarTop(c *ui.Context) {
 		h = bar.Height
 	}
 
+	// The traffic lights center in the strip TitleBar reports (their
+	// height plus the space above and below), which is shorter than the
+	// drag strip. Centering the name in the whole strip would put it a
+	// few points below the buttons, so it centers in the lights' strip
+	// instead and the difference goes in below, as padding.
+	lights := h
+	if bar.Height > 0 && bar.Height < h {
+		lights = bar.Height
+	}
+
 	textC := ui.Hex("#1c1c1f")
 	if t.Dark {
 		textC = ui.Hex("#ededf1")
@@ -64,7 +74,7 @@ func (a *App) sidebarTop(c *ui.Context) {
 	// app's sidebar title does.
 	row := ui.Row(c).Height(h).
 		AlignItems(ui.Center).
-		Padding(0, 14, 0, leftPad).
+		Padding(0, 14, h-lights, leftPad).
 		Gap(7).
 		DragWindow()
 
@@ -214,6 +224,15 @@ func (a *App) header(c *ui.Context) {
 		}
 	}
 
+	// As in sidebarTop: the traffic lights center in the shorter strip
+	// TitleBar reports, so the header's content centers on that line, not
+	// the whole strip's, to stay level with the lights when the sidebar
+	// is hidden.
+	lights := h
+	if bar.Height > 0 && bar.Height < h {
+		lights = bar.Height
+	}
+
 	borderC := ui.RGBA(0, 0, 0, 0.08)
 	textC := ui.Hex("#1c1c1f")
 	mutedC := ui.Hex("#85858d")
@@ -227,7 +246,7 @@ func (a *App) header(c *ui.Context) {
 
 	headerRow := ui.Row(c).Height(h).
 		AlignItems(ui.Center).
-		Padding(0, 16, 0, leftPad).
+		Padding(0, 16, h-lights, leftPad).
 		Gap(10).
 		Background(t.Background).
 		BorderWidth(0, 0, 0.5, 0).
