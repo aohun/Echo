@@ -57,11 +57,12 @@ func Run(opts Options) error {
 
 	mygo.App.WhenReady(func() {
 		a.win = mygo.NewWindow(mygo.WindowOptions{
-			Title:     a.text.S.AppName,
-			Width:     opts.Width,
-			Height:    opts.Height,
-			MinWidth:  820,
-			MinHeight: 560,
+			Title:         a.text.S.AppName,
+			Width:         opts.Width,
+			Height:        opts.Height,
+			MinWidth:      820,
+			MinHeight:     560,
+			TitleBarStyle: mygo.TitleBarHiddenInset,
 			// StateKey keeps the window's size and place across runs, as
 			// magpie keeps its own window's.
 			StateKey: "echo",

@@ -146,6 +146,13 @@ func TestSavedLanguageWinsOverLocale(t *testing.T) {
 // which is magpie's own setting rather than one of the shell's.
 func TestLoadSettingsReadsMagpie(t *testing.T) {
 	s := settings.Load()
+	orig := s.Lang
+	t.Cleanup(func() {
+		s := settings.Load()
+		s.Lang = orig
+		_ = settings.Save(s)
+	})
+
 	s.Lang = string(LangDE)
 	if err := settings.Save(s); err != nil {
 		t.Fatalf("saving settings: %v", err)
@@ -172,3 +179,38 @@ func TestQuitFlagLetsTheWindowClose(t *testing.T) {
 		t.Fatal("a fresh app is already quitting")
 	}
 }
+
+// TestChineseNavigationMatchesMagpie: Chinese navigation strings must match
+// magpie's hand-maintained translations (使用, Agent, 会话, 资源库, 模型, 供应商,
+// 路由, 网关, 观测, 用量, 扩展, 插件).
+func TestChineseNavigationMatchesMagpie(t *testing.T) {
+	s := settings.Load()
+	orig := s.Lang
+	t.Cleanup(func() {
+		s := settings.Load()
+		s.Lang = orig
+		_ = settings.Save(s)
+	})
+
+	s.Lang = string(LangZH)
+	if err := settings.Save(s); err != nil {
+		t.Fatalf("saving settings: %v", err)
+	}
+
+	app := newApp(PageAgents, "zh-CN")
+	tt := ui.NewTester(app.ViewForTest(), 1180, 780)
+	tt.Frame()
+
+	expected := []string{
+		"使用", "Agent", "会话", "资源库",
+		"模型", "供应商", "路由", "网关",
+		"观测", "用量",
+		"扩展", "插件",
+	}
+	for _, text := range expected {
+		if !tt.HasText(text) {
+			t.Errorf("Chinese navigation missing expected string %q; texts were %v", text, tt.Texts())
+		}
+	}
+}
+

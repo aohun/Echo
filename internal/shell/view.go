@@ -18,78 +18,272 @@ import (
 // beforehand.
 func (a *App) view(c *ui.Context) {
 	t := c.Theme()
-	c.Root().Background(t.Background)
+	contentBg := ui.Hex("#ffffff")
+	if t.Dark {
+		contentBg = ui.Hex("#1c1c1f")
+	}
+	c.Root().Background(contentBg)
 
-	ui.Row(c).Fill().Children(func() {
-		a.sidebar(c)
-		ui.Column(c).Grow(1).Shrink(1).Children(func() {
+	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
+		if !a.sidebarHidden {
+			a.sidebar(c)
+		}
+		ui.Column(c).Grow(1).Shrink(1).FillHeight().Children(func() {
 			a.header(c)
 			a.pageView(c)
 		})
 	})
 }
 
-// sidebar is the navigation: Echo's pages, grouped as magpie's are, with the
-// gateway's address at its foot.
+// sidebarTop renders the top strip of the sidebar: macOS traffic lights space,
+// Echo's brand icon and name, and the window drag region.
+func (a *App) sidebarTop(c *ui.Context) {
+	t := c.Theme()
+	bar := c.TitleBar()
+
+	leftPad := float32(14)
+	if runtime.GOOS == "darwin" {
+		leftPad = 84
+		if bar.Left > 0 && bar.Left+12 > leftPad {
+			leftPad = bar.Left + 12
+		}
+	}
+
+	h := float32(50)
+	if bar.Height > h {
+		h = bar.Height
+	}
+
+	textC := ui.Hex("#1c1c1f")
+	iconC := ui.Hex("#1c1c1f")
+	if t.Dark {
+		textC = ui.Hex("#ededf1")
+		iconC = ui.Hex("#ededf1")
+	}
+
+	row := ui.Row(c).Height(h).
+		AlignItems(ui.Center).
+		Padding(0, 14, 0, leftPad).
+		Gap(7).
+		DragWindow()
+
+	row.Children(func() {
+		ui.Icon(c, brandIcon()).Size(16, 16).TextColor(iconC)
+		ui.Text(c, a.text.S.AppName).
+			FontSize(13.5).
+			FontWeight(600).
+			TextColor(textC).
+			SingleLine()
+	})
+}
+
+// sidebar is the navigation: Echo's pages, grouped as magpie's are.
 func (a *App) sidebar(c *ui.Context) {
 	t := c.Theme()
-	side := ui.Column(c).Width(212).Shrink(0).PaddingY(t.Space(3)).Background(t.Surface)
+	bg := ui.Hex("#f4f4f6")
+	borderC := ui.RGBA(0, 0, 0, 0.08)
+	if t.Dark {
+		bg = ui.Hex("#1a1a1e")
+		borderC = ui.RGBA(255, 255, 255, 0.08)
+	}
+
+	side := ui.Column(c).Width(212).Shrink(0).FillHeight().Background(bg).
+		BorderWidth(0, 0.5, 0, 0).BorderColor(borderC)
 	side.Children(func() {
-		// The brand, as the window's own name rather than a title bar.
-		ui.Text(c, a.text.S.AppName).FontSize(15).Bold().Padding(t.Space(1), t.Space(5), t.Space(3))
-
-		page := string(a.page)
-		if ui.Sidebar(c, &page, func() {
-			// One section per group, in the order the pages list them. A
-			// group whose pages all belong to a page that is not built
-			// still shows: the skeleton has no gateway mode yet.
-			for _, g := range []Group{GroupWork, GroupModels, GroupInsight, GroupExtend} {
+		a.sidebarTop(c)
+		ui.Scroll(c).Grow(1).Shrink(1).Padding(0, 10, 10, 10).Children(func() {
+			for i, g := range []Group{GroupWork, GroupModels, GroupInsight, GroupExtend} {
 				group := g
-				open := a.sidebarOpen[group]
-				ui.SidebarSection(c, a.groupTitle(group), &open, func() {
-					for _, info := range a.Pages() {
-						if info.Group != group {
-							continue
-						}
-						item := ui.SidebarItem(c, string(info.Page), nil, info.Title)
-						// A page that has data behind it gets a count,
-						// so the navigation says something about it.
-						if n, ok := a.pageCount(info.Page); ok {
-							item.Children(func() { ui.Badge(c, fmt.Sprint(n)) })
-						}
-					}
+				topPad := float32(14)
+				if i == 0 {
+					topPad = 2
+				}
+				ui.Row(c).Padding(topPad, 8, 4, 8).Children(func() {
+					ui.Text(c, a.groupTitle(group)).
+						FontSize(11).
+						FontWeight(500).
+						TextColor(t.TextMuted).
+						SingleLine()
 				})
-				a.sidebarOpen[group] = open
+
+				for _, info := range a.Pages() {
+					if info.Group != group {
+						continue
+					}
+					a.sidebarItem(c, info)
+				}
 			}
-		}).Grow(1).Label(a.text.S.AppName).Changed() {
-			a.page = Page(page)
-			c.Invalidate()
-		}
-
-		a.sidebarFoot(c)
+		})
 	})
 }
 
-// sidebarFoot is the bottom of the navigation: the gateway's address, which is
-// the one fact about the running app worth keeping in sight.
-func (a *App) sidebarFoot(c *ui.Context) {
+// sidebarItem renders one item in the navigation sidebar.
+func (a *App) sidebarItem(c *ui.Context, info PageInfo) {
 	t := c.Theme()
-	ui.Column(c).Padding(t.Space(2), t.Space(5)).Gap(t.Space(1)).Children(func() {
-		ui.Text(c, a.gatewayAddr()).FontSize(11).TextColor(t.TextMuted).SingleLine().
-			Tooltip(a.text.S.Gateway)
+	selected := info.Page == a.page
+
+	row := ui.Row(c).Key(string(info.Page)).
+		AlignItems(ui.Center).
+		Gap(9).
+		Height(30).
+		Padding(0, 8).
+		Radius(7).
+		Cursor(ui.CursorPointer).
+		Focusable().
+		Role(ui.RoleButton)
+
+	if row.Clicked() {
+		a.page = info.Page
+		c.Invalidate()
+	}
+
+	icon := pageIcon(info.Page)
+
+	var (
+		textC ui.Color
+		iconC ui.Color
+	)
+
+	if selected {
+		if t.Dark {
+			row.Background(ui.Hex("#25262c")).
+				Border(0.5, ui.RGBA(255, 255, 255, 0.08)).
+				Shadow(0, 1, 2, 0, ui.RGBA(0, 0, 0, 0.3))
+			textC = ui.Hex("#ededf1")
+			iconC = ui.Hex("#ededf1")
+		} else {
+			row.Background(ui.Hex("#ffffff")).
+				Border(0.5, ui.RGBA(0, 0, 0, 0.08)).
+				Shadow(0, 1, 2, 0, ui.RGBA(0, 0, 0, 0.06))
+			textC = ui.Hex("#1c1c1f")
+			iconC = ui.Hex("#1c1c1f")
+		}
+	} else {
+		if row.Hovered() || row.Focused() {
+			if t.Dark {
+				row.Background(ui.RGBA(255, 255, 255, 0.06))
+				textC = ui.Hex("#ededf1")
+				iconC = ui.Hex("#ededf1")
+			} else {
+				row.Background(ui.RGBA(0, 0, 0, 0.04))
+				textC = ui.Hex("#1c1c1f")
+				iconC = ui.Hex("#1c1c1f")
+			}
+		} else {
+			if t.Dark {
+				textC = ui.Hex("#b9b9c1")
+				iconC = ui.Hex("#8b8b94")
+			} else {
+				textC = ui.Hex("#4b5563")
+				iconC = ui.Hex("#85858d")
+			}
+		}
+	}
+
+	row.Children(func() {
+		if icon != nil {
+			ui.Icon(c, icon).Size(16, 16).TextColor(iconC)
+		}
+		txt := ui.Text(c, info.Title).
+			FontSize(13).
+			TextColor(textC).
+			Grow(1).
+			SingleLine()
+		if selected {
+			txt.FontWeight(500)
+		}
 	})
 }
 
-// header is the strip above the page: its title, and what the page can do.
+// header is the strip above the page: breadcrumbs, sidebar toggle, settings, and window dragging.
 func (a *App) header(c *ui.Context) {
 	t := c.Theme()
-	ui.Row(c).AlignItems(ui.Center).Padding(t.Space(4), t.Space(5)).Gap(t.Space(3)).
-		Background(t.Background).Children(func() {
-		ui.Text(c, a.pageTitle(a.page)).FontSize(17).Bold()
+	bar := c.TitleBar()
+
+	h := float32(50)
+	if bar.Height > h {
+		h = bar.Height
+	}
+
+	leftPad := float32(16)
+	if a.sidebarHidden && runtime.GOOS == "darwin" {
+		leftPad = 84
+		if bar.Left > 0 && bar.Left+12 > leftPad {
+			leftPad = bar.Left + 12
+		}
+	}
+
+	borderC := ui.RGBA(0, 0, 0, 0.08)
+	textC := ui.Hex("#1c1c1f")
+	mutedC := ui.Hex("#85858d")
+	faintC := ui.Hex("#9a9aa3")
+	if t.Dark {
+		borderC = ui.RGBA(255, 255, 255, 0.08)
+		textC = ui.Hex("#ededf1")
+		mutedC = ui.Hex("#8b8b94")
+		faintC = ui.Hex("#5a5a63")
+	}
+
+	headerRow := ui.Row(c).Height(h).
+		AlignItems(ui.Center).
+		Padding(0, 16, 0, leftPad).
+		Gap(10).
+		Background(t.Background).
+		BorderWidth(0, 0, 0.5, 0).
+		BorderColor(borderC).
+		DragWindow()
+
+	headerRow.Children(func() {
+		// Toggle sidebar button
+		toggleBtn := ui.Row(c).
+			Center().
+			Width(28).
+			Height(28).
+			Radius(5).
+			Cursor(ui.CursorPointer).
+			Role(ui.RoleButton)
+
+		if toggleBtn.Hovered() {
+			if t.Dark {
+				toggleBtn.Background(ui.RGBA(255, 255, 255, 0.08))
+			} else {
+				toggleBtn.Background(ui.RGBA(0, 0, 0, 0.05))
+			}
+		}
+		if toggleBtn.Clicked() {
+			a.sidebarHidden = !a.sidebarHidden
+			c.Invalidate()
+		}
+		toggleBtn.Children(func() {
+			ui.Icon(c, toggleIcon()).Size(15, 15).TextColor(mutedC)
+		})
+
+		// Breadcrumbs: Group / Page
+		groupTitle := a.groupTitle(a.pageGroup(a.page))
+		pageTitle := a.pageTitle(a.page)
+
+		ui.Row(c).AlignItems(ui.Center).Gap(7).Children(func() {
+			ui.Text(c, groupTitle).
+				FontSize(13.5).
+				TextColor(mutedC).
+				SingleLine()
+			ui.Text(c, "/").
+				FontSize(13.5).
+				TextColor(faintC).
+				SingleLine()
+			ui.Text(c, pageTitle).
+				FontSize(13.5).
+				FontWeight(600).
+				TextColor(textC).
+				SingleLine()
+		})
+
 		ui.Spacer(c)
+
 		if a.loading {
 			ui.Spinner(c).Size(14, 14)
 		}
+
 		if ui.Button(c, a.text.S.Settings).Clicked() {
 			mygo.App.ShowAboutPanel(mygo.AboutPanelOptions{
 				ApplicationName:    a.text.S.AppName,
@@ -97,14 +291,13 @@ func (a *App) header(c *ui.Context) {
 			})
 		}
 	})
-	ui.Divider(c)
 }
 
 // pageView draws the page being shown.
 func (a *App) pageView(c *ui.Context) {
 	// One scroll for every page: the pages are lists, and a list scrolls
 	// itself, but a page's own header and foot do not.
-	ui.Scroll(c).Fill().Children(func() {
+	ui.Scroll(c).Grow(1).Shrink(1).Children(func() {
 		ui.Column(c).Fill().Padding(0, 0, 20, 0).Children(func() {
 			switch a.page {
 			case PageAgents:

@@ -88,6 +88,9 @@ type App struct {
 	// sidebarOpen holds each group's expanded state, keyed by group.
 	sidebarOpen map[Group]bool
 
+	// sidebarHidden is true when the sidebar is collapsed by the user.
+	sidebarHidden bool
+
 	// quitting is set while the app is ending, so the window's close
 	// handler lets the close through instead of hiding the window.
 	quitting bool
@@ -182,6 +185,16 @@ func (a *App) groupTitle(g Group) string {
 		return t.GroupExtend
 	}
 	return string(g)
+}
+
+// pageGroup returns the Group a Page belongs to.
+func (a *App) pageGroup(p Page) Group {
+	for _, spec := range allPages {
+		if spec.page == p {
+			return spec.group
+		}
+	}
+	return GroupWork
 }
 
 // pageTitle is a page's title in the app's language.
