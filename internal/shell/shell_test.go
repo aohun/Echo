@@ -5,6 +5,7 @@ package shell
 import (
 	"testing"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -171,12 +172,83 @@ func TestLoadSettingsReadsMagpie(t *testing.T) {
 // than ending the app, except while the app is quitting — otherwise a quit
 // would be swallowed and the app could never exit.
 //
-// The handler itself needs a window and a real event, so this pins the flag
-// the handler reads.
+// The handler is driven through MyGo's real quit sequence, because the
+// ordering is the whole bug: a quit fires OnBeforeQuit, then closes every
+// window, and only then fires OnWillQuit. The flag must therefore be set on
+// OnBeforeQuit; set on OnWillQuit it lands after the close it was meant to
+// let through, the handler hides the window, and the app never exits.
 func TestQuitFlagLetsTheWindowClose(t *testing.T) {
 	app := NewForTest()
 	if app.quitting {
 		t.Fatal("a fresh app is already quitting")
+	}
+
+	// A close that arrives on its own (the window's button) hides the
+	// window and does not close it.
+	close := &mygo.CloseEvent{}
+	app.onWindowClose(close)
+	if !close.DefaultPrevented() {
+		t.Error("closing the window did not hide it: the app would end on its own")
+	}
+
+	// The same close, inside a quit: OnBeforeQuit has run, so the handler
+	// lets it through.
+	app.beginQuit()
+	close = &mygo.CloseEvent{}
+	app.onWindowClose(close)
+	if close.DefaultPrevented() {
+		t.Error("the quit's own window close was cancelled: the app cannot exit")
+	}
+}
+
+// fakeQuitHooks stands in for mygo.Application's quit hooks, so the wiring
+// can be replayed in MyGo's real order without a running app.
+type fakeQuitHooks struct {
+	before, will []func(*mygo.QuitEvent)
+}
+
+func (f *fakeQuitHooks) OnBeforeQuit(fn func(*mygo.QuitEvent)) func() {
+	f.before = append(f.before, fn)
+	return func() {}
+}
+
+func (f *fakeQuitHooks) OnWillQuit(fn func(*mygo.QuitEvent)) func() {
+	f.will = append(f.will, fn)
+	return func() {}
+}
+
+// TestQuitWiringSurvivesMyGosSequence: wireQuit must leave the app able to
+// exit when a quit runs MyGo's real sequence — OnBeforeQuit, then every
+// window closed, then OnWillQuit.
+//
+// This is the regression that made the tray's Quit do nothing: the flag was
+// set on OnWillQuit, which MyGo fires only after the windows have closed, so
+// the close handler hid the window instead and cancelled the quit. Replaying
+// the sequence here fails if the flag moves back.
+func TestQuitWiringSurvivesMyGosSequence(t *testing.T) {
+	app := NewForTest()
+	hooks := &fakeQuitHooks{}
+	stopped := false
+	wireQuit(hooks, app, func() { stopped = true })
+
+	if len(hooks.before) != 1 {
+		t.Fatalf("OnBeforeQuit got %d listeners, want 1: the flag would never be set before the windows close", len(hooks.before))
+	}
+	if len(hooks.will) != 1 {
+		t.Fatalf("OnWillQuit got %d listeners, want 1: the gateway would never be given back", len(hooks.will))
+	}
+
+	// MyGo's prepareQuit: OnBeforeQuit, then each window's close, then
+	// OnWillQuit.
+	hooks.before[0](&mygo.QuitEvent{})
+	close := &mygo.CloseEvent{}
+	app.onWindowClose(close)
+	if close.DefaultPrevented() {
+		t.Fatal("a quit's window close was cancelled: the app cannot exit")
+	}
+	hooks.will[0](&mygo.QuitEvent{})
+	if !stopped {
+		t.Error("the gateway was not given back on the way out")
 	}
 }
 

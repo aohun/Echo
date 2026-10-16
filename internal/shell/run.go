@@ -70,12 +70,7 @@ func Run(opts Options) error {
 		})
 		// Closing the window hides it rather than ending the app, which is
 		// what a menu bar app does: the tray icon brings it back.
-		a.win.OnClose(func(e *mygo.CloseEvent) {
-			if !a.quitting {
-				e.PreventDefault()
-				a.Hide()
-			}
-		})
+		a.win.OnClose(a.onWindowClose)
 		a.win.SetMenu(a.menu())
 
 		if !opts.NoTray {
@@ -97,17 +92,69 @@ func Run(opts Options) error {
 		a.Reload()
 	})
 
+	// A quit closes every window before OnWillQuit runs, and the window's
+	// close handler hides rather than closes unless quitting is set. So the
+	// flag is set here, on the hook that runs first: set any later and the
+	// handler cancels the very close the quit is made of, and the app stays
+	// up (MyGo's menubar-native example does the same).
+	//
 	// The gateway is given back on the way out, so the next launch — or the
 	// magpie that takes over — finds the port free rather than a socket
 	// closing under it.
+	var stop func()
 	if !opts.NoBackend {
-		mygo.App.OnWillQuit(func(_ *mygo.QuitEvent) {
-			a.quitting = true
-			gui.StopBackend()
-		})
+		stop = gui.StopBackend
 	}
+	wireQuit(mygo.App, a, stop)
 
 	return mygo.App.Run()
+}
+
+// quitHooks is the part of mygo.Application the quit wiring needs: the two
+// hooks that bracket a quit, which the ordering below turns on.
+type quitHooks interface {
+	OnBeforeQuit(func(*mygo.QuitEvent)) func()
+	OnWillQuit(func(*mygo.QuitEvent)) func()
+}
+
+// wireQuit registers what ends the app, on the hooks MyGo fires in the order
+// that makes them work.
+//
+// beginQuit goes on OnBeforeQuit — the hook that runs before a quit closes
+// any window — because the window's close handler (onWindowClose) hides the
+// window unless it has run, and a prevented close cancels the whole quit.
+// OnWillQuit fires only after every window has closed, so a flag set there
+// arrives too late to let the quit's own close through. stopBackend, which
+// must run after the windows are gone, goes there instead.
+func wireQuit(app quitHooks, a *App, stopBackend func()) {
+	app.OnBeforeQuit(func(_ *mygo.QuitEvent) { a.beginQuit() })
+	if stopBackend != nil {
+		app.OnWillQuit(func(_ *mygo.QuitEvent) { stopBackend() })
+	}
+}
+
+// beginQuit marks the app as ending, which is what lets the window's close
+// handler through.
+//
+// It runs on MyGo's OnBeforeQuit, the hook that fires before a quit closes
+// any window: the close handler (onWindowClose) hides the window unless this
+// has run, and a prevented close cancels the whole quit.
+func (a *App) beginQuit() { a.quitting = true }
+
+// onWindowClose is the window's close handler: it hides the window rather
+// than ending the app, which is what a menu bar app does — the tray icon
+// brings it back.
+//
+// It must let a quit's own close through, or the quit is cancelled by the
+// very handler that is meant to keep the app up between quits. That is what
+// beginQuit marks, and why it is wired to OnBeforeQuit rather than
+// OnWillQuit, which MyGo fires only after every window has closed.
+func (a *App) onWindowClose(e *mygo.CloseEvent) {
+	if a.quitting {
+		return
+	}
+	e.PreventDefault()
+	a.Hide()
 }
 
 // menu is the application menu: the standard menus, with Echo's own About.
