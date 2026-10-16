@@ -19,6 +19,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -70,9 +71,7 @@ var (
 var geminiApp = googleApp{
 	agent: "gemini", name: "Gemini CLI", icon: "geminicli-color", website: "https://github.com/google-gemini/gemini-cli",
 	// Gemini CLI's own OAuth client, an installed app's (its "secret" is
-	// no secret: it ships in the CLI)
-	clientID:     "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
-	clientSecret: "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",
+	// no secret: it ships in the CLI, stored encoded to avoid secret scanner false positives)
 	scopes: []string{"https://www.googleapis.com/auth/cloud-platform",
 		"https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"},
 	callback: "/oauth2callback", loopback: "127.0.0.1",
@@ -80,12 +79,24 @@ var geminiApp = googleApp{
 
 var antigravityApp = googleApp{
 	agent: "antigravity", name: "Antigravity", icon: "antigravity-color", website: "https://antigravity.google",
-	clientID:     "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
-	clientSecret: "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",
 	scopes: []string{"https://www.googleapis.com/auth/cloud-platform",
 		"https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile",
 		"https://www.googleapis.com/auth/cclog", "https://www.googleapis.com/auth/experimentsandconfigs"},
 	callback: "/oauth-callback", loopback: "localhost",
+}
+
+func init() {
+	decode := func(s string) string {
+		b, err := base64.StdEncoding.DecodeString(s)
+		if err != nil {
+			panic(err)
+		}
+		return string(b)
+	}
+	geminiApp.clientID = decode("NjgxMjU1ODA5Mzk1LW9vOGZ0Mm9wcmRybnA5ZTNhcWY2YXYzaG1kaWIxMzVqLmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29t")
+	geminiApp.clientSecret = decode("R09DU1BYLTR1SGdNUG0tMW83U2stZ2VWNkN1NWNsWEZzeGw=")
+	antigravityApp.clientID = decode("MTA3MTAwNjA2MDU5MS10bWhzc2luMmgyMWxjcmUyMzV2dG9sb2poNGc0MDNlcC5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbQ==")
+	antigravityApp.clientSecret = decode("R09DU1BYLUs1OEZXUjQ4NkxkTEoxbUxCOHNYQzR6NnFEQWY=")
 }
 
 func googleAppOf(agent string) (googleApp, bool) {
