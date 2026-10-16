@@ -35,8 +35,8 @@ func (a *App) view(c *ui.Context) {
 	})
 }
 
-// sidebarTop renders the top strip of the sidebar: macOS traffic lights space,
-// Echo's brand icon and name, and the window drag region.
+// sidebarTop renders the top strip of the sidebar: macOS traffic lights
+// space, Echo's name, and the window drag region.
 func (a *App) sidebarTop(c *ui.Context) {
 	t := c.Theme()
 	bar := c.TitleBar()
@@ -55,12 +55,13 @@ func (a *App) sidebarTop(c *ui.Context) {
 	}
 
 	textC := ui.Hex("#1c1c1f")
-	iconC := ui.Hex("#1c1c1f")
 	if t.Dark {
 		textC = ui.Hex("#ededf1")
-		iconC = ui.Hex("#ededf1")
 	}
 
+	// No brand icon: the name lines up with the navigation rows beside it
+	// (they indent their content 8px into the same padding), as a Mac
+	// app's sidebar title does.
 	row := ui.Row(c).Height(h).
 		AlignItems(ui.Center).
 		Padding(0, 14, 0, leftPad).
@@ -68,11 +69,11 @@ func (a *App) sidebarTop(c *ui.Context) {
 		DragWindow()
 
 	row.Children(func() {
-		ui.Icon(c, brandIcon()).Size(16, 16).TextColor(iconC)
 		ui.Text(c, a.text.S.AppName).
 			FontSize(13.5).
 			FontWeight(600).
 			TextColor(textC).
+			Padding(0, 8).
 			SingleLine()
 	})
 }

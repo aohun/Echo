@@ -213,4 +213,3 @@ func TestChineseNavigationMatchesMagpie(t *testing.T) {
 		}
 	}
 }
-
