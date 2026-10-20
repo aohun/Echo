@@ -34,6 +34,34 @@
 
 <br>
 
+## 下载与安装
+
+**macOS 13+**：从 [GitHub Releases](https://github.com/aohun/Echo/releases/latest) 下载 Apple 芯片的 arm64 DMG，或 Intel Mac 的 x86_64 DMG。
+
+**Windows x64**：从 [GitHub Releases](https://github.com/aohun/Echo/releases/latest) 下载 Windows 的 .exe 安装包。
+
+**Homebrew** 是 macOS 上推荐的安装与升级方式：
+
+```sh
+brew tap aohun/echo https://github.com/aohun/Echo.git
+brew install --cask aohun/echo/echo
+brew upgrade --cask aohun/echo/echo
+```
+
+### 如果 macOS 说打不开 Echo.app
+
+如果 macOS 说「Apple 无法验证『Echo』是否包含可能危害 Mac 安全或泄露隐私的恶意软件」，说明手动下载的安装包可能还没有经过 Apple 的公证。先确认这个 app 来自可信的 [GitHub Releases](https://github.com/aohun/Echo/releases/latest)，再用下面任一方法：
+
+1. 在**应用程序**里按住 Control 点击 `Echo.app`，选**打开**，在确认对话框里再选一次**打开**。
+2. 如果 macOS 还是拦着，打开**系统设置 > 隐私与安全性**，在安全警告旁点**仍要打开**，然后再启动这个 app。
+3. 也可以在终端里去掉隔离属性：
+
+   ```sh
+   sudo xattr -dr com.apple.quarantine /Applications/Echo.app
+   ```
+
+这些步骤只用于你信任来源的 app。用 Homebrew 安装的通常不需要手动去掉隔离属性。
+
 ## Echo 适合你吗？
 
 每个 Agent 都把模型写在自己的配置文件里，格式各不相同，key 和 base URL 各管各的。花钱买的订阅只能在一个 Agent 里用。Echo 把这些收进一个应用和一个本地网关：

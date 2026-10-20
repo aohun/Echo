@@ -126,14 +126,42 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.version.outputs.ref }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist
-          # the disk images, the installer, the signed update archives and
-          # the manifests the updater reads
-          find packages -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.zip' -o -name '*.tar.gz' -o -name 'update-*.json' \) \
-            -exec cp {} dist/ \;
+          # What people install: the two disk images — Apple silicon and
+          # Intel — and the Windows installer. The raw binary and the app
+          # bundle stay out of the page.
+          for f in $(find packages -name '*.dmg'); do
+            case "$f" in
+              *arm64*) cp "$f" "dist/Echo-$VERSION-arm64.dmg" ;;
+              *amd64*) cp "$f" "dist/Echo-$VERSION-x86_64.dmg" ;;
+            esac
+          done
+          for f in $(find packages -name '*Setup*.exe'); do
+            cp "$f" "dist/Echo-$VERSION-setup-amd64.exe"
+          done
+
+          # The in-app updater (the About page's 检查更新) reads a manifest
+          # out of the latest release, and the manifest names a signed
+          # archive to install. Those six files are what it needs, so they
+          # are published with the three downloads: the page carries nine
+          # assets, three of them what people install and six the updater's.
+          for f in $(find packages -name '*.tar.gz' -o -name 'update-*.json'); do
+            cp "$f" dist/
+          done
           ls -la dist
+
+          # the cask names the assets, so its version and hashes follow
+          # what was built
+          sed -i "s/version \"[^\"]*\"/version \"$VERSION\"/" Casks/echo.rb
+          arm=$(sha256sum "dist/Echo-$VERSION-arm64.dmg" | cut -d' ' -f1)
+          intel=$(sha256sum "dist/Echo-$VERSION-x86_64.dmg" | cut -d' ' -f1)
+          sed -i "s/arm: \"[0-9a-f]*\"/arm: \"$arm\"/" Casks/echo.rb
+          sed -i "s/intel: \"[0-9a-f]*\"/intel: \"$intel\"/" Casks/echo.rb
+          git diff -- Casks/echo.rb || true
+
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
           else
@@ -141,3 +169,15 @@ jobs:
             gh release create "$TAG" dist/* --verify-tag --title "Echo $TAG" --generate-notes
           fi
           gh release view "$TAG" --json assets -q '.assets | length'
+
+      - name: Commit the cask
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/echo.rb
+          if git diff --staged --quiet; then
+            echo "the cask already names this version"
+            exit 0
+          fi
+          git commit -m "release: Echo ${{ needs.version.outputs.version }}"
+          git push origin HEAD:${{ github.ref_name }}

@@ -35,6 +35,34 @@ and when a quota runs out, it quietly moves on to the next account.
 
 <br>
 
+## Download and install
+
+**macOS 13+**: download the arm64 DMG for Apple silicon or the x86_64 DMG for Intel Macs from [GitHub Releases](https://github.com/aohun/Echo/releases/latest).
+
+**Windows x64**: download the Windows .exe installer from [GitHub Releases](https://github.com/aohun/Echo/releases/latest).
+
+**Homebrew** is the recommended installation and update method on macOS:
+
+```sh
+brew tap aohun/echo https://github.com/aohun/Echo.git
+brew install --cask aohun/echo/echo
+brew upgrade --cask aohun/echo/echo
+```
+
+### If macOS says it cannot open Echo.app
+
+If macOS says that Apple cannot verify whether `Echo.app` contains malware, the manually downloaded package may not yet be notarized by Apple. First confirm that the app came from the trusted [GitHub Releases](https://github.com/aohun/Echo/releases/latest), then use one of these methods:
+
+1. In **Applications**, Control-click `Echo.app`, choose **Open**, and choose **Open** again in the confirmation dialog.
+2. If macOS still blocks it, open **System Settings > Privacy & Security**, click **Open Anyway** next to the security warning, and launch the app again.
+3. You can also remove the quarantine attribute in Terminal:
+
+   ```sh
+   sudo xattr -dr com.apple.quarantine /Applications/Echo.app
+   ```
+
+Only use these steps for an app whose source you trust. Homebrew installations usually do not require manual quarantine removal.
+
 ## Is Echo for you?
 
 Each agent keeps its model in its own file, in its own format, with its own keys and base URLs. A subscription you pay for works in one agent and nowhere else. Echo puts all of that behind one app and one local gateway:
