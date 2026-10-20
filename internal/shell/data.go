@@ -3,10 +3,14 @@
 package shell
 
 import (
-	"github.com/yetone/magpie/internal/agent"
-	"github.com/yetone/magpie/internal/catalog"
-	"github.com/yetone/magpie/internal/pluginrt"
-	"github.com/yetone/magpie/internal/provider"
+	"encoding/json"
+	"os"
+	"path/filepath"
+
+	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/library"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // Data is what the pages draw, read from magpie's domain packages.
@@ -17,48 +21,296 @@ type Data struct {
 	// Agents are the coding agents on this machine, with the ones magpie
 	// knows but has not found after them.
 	Agents []AgentRow
-	// Providers are the configured vendors.
+	// AgentInstalls are the uninstalled agents available for installation.
+	AgentInstalls []AgentInstallRow
+	// AgentProfiles are the saved configuration schemes (方案).
+	AgentProfiles []ProfileRow
+	// Providers are the configured vendors, as the Providers page's rows
+	// draw them (provider.go).
 	Providers []ProviderRow
-	// Sessions, Library, Usage, Routing and Plugins are not read yet; each
-	// page says so until its own read is written.
-	Plugins []PluginRow
+	// Gateway is what the Gateway page draws (gateway_page.go).
+	Gateway GatewayRow
+	// Library is what the Library page and sidebar badges draw.
+	Library LibraryData
+	// Plugins is what the Plugins page draws (plugins_data.go).
+	Plugins PluginsData
+	// Routing is what the Routing page draws (routing_data.go).
+	Routing RoutingData
+	// Usage is what the Usage page draws (usage_data.go).
+	Usage UsageData
+	// Settings is what the Settings page draws (settings_data.go).
+	Settings SettingsSnap
 }
 
-// AgentRow is one coding agent as the Agents page lists it.
-type AgentRow struct {
-	ID   string
-	Name string
-	// Found is whether the agent is present on this machine.
-	Found bool
-	// Path is the config file magpie edits for it.
-	Path string
-	// Plugin is the id of the plugin that adds it, "" for magpie's own.
-	Plugin string
+func lastDataCachePath() string {
+	return filepath.Join(appdir.Cache(), "echo-shell-cache.json")
 }
 
-// ProviderRow is one vendor as the Providers page lists it.
-type ProviderRow struct {
-	ID   string
-	Name string
-	// Models is how many models the catalog serves for it.
-	Models int
-	// Keyed is whether an API key is saved for it.
-	Keyed bool
-	// SignedIn is whether an account is signed in for it.
-	SignedIn bool
-	// Off is whether the reader switched the vendor off.
-	Off bool
+func loadDataCache() (Data, bool) {
+	b, err := os.ReadFile(lastDataCachePath())
+	if err != nil || len(b) == 0 {
+		return Data{}, false
+	}
+	var d Data
+	if err := json.Unmarshal(b, &d); err != nil {
+		return Data{}, false
+	}
+	return d, true
 }
 
-// PluginRow is one plugin as the Plugins page lists it.
-type PluginRow struct {
-	ID      string
-	Name    string
-	Sub     string
-	Enabled bool
+func saveDataCache(d Data) {
+	b, err := json.Marshal(d)
+	if err != nil {
+		return
+	}
+	_ = edit.WriteAtomic(lastDataCachePath(), b)
 }
 
-// readData reads everything the pages draw.
+// LibraryData is what the Library page and its sidebar badge draw.
+type LibraryData struct {
+	Dir         string
+	Backups     string
+	CopySkills  bool
+	CheckDue    bool
+	Partial     bool
+	Counts      LibraryCounts
+	Skills      []SkillRow
+	FoundSkills []FoundSkillRow
+	NewSkills   []NewSkillRow
+	SkillGroups []SkillGroupRow
+	Agents      []LibAgentRow
+	// Projects are the folders whose agents get some of the library's
+	// skills as the project's own, and Problems what the last write
+	// couldn't do in any of them.
+	Projects []ProjectRow
+	Problems []ProblemRow
+}
+
+// ProblemRow is one thing the last change couldn't write: an agent's
+// instructions, its MCP file, a project, or a skill that wouldn't update.
+// The page shows them in one card, so a chip's amber dot isn't the only
+// place a failure is said.
+type ProblemRow struct {
+	Agent string // the agent's id, or a project's folder
+	What  string // "instructions", "mcp:<name>", "skill:<name>", "project:<name>"
+	Error string
+	// Own is a skill the agent has a folder of its own for, not the
+	// library's: the page offers to use the library's or keep the agent's
+	Own bool
+}
+
+// ProjectRow is a folder given some of the library's skills as its own.
+type ProjectRow struct {
+	Dir      string
+	Name     string
+	Copy     bool
+	Skills   map[string][]string // skill name -> the agents it is placed for
+	Missing  bool                // the folder is gone
+	Problems map[string]string   // by skill name ("" for the project's own)
+	Placed   []string            // what magpie put there
+}
+
+// SkillGroupRow is a group the reader made of some skills: the page shows
+// it above the ones by source, with its skills taken out of theirs.
+type SkillGroupRow struct {
+	Name   string
+	Skills []string
+}
+
+// NewSkillRow is a skill a check found in a repository the library's
+// skills came from, which the library doesn't have yet.
+type NewSkillRow struct {
+	ID          string
+	Name        string
+	Description string
+	Repo        string
+	Agents      []string
+}
+
+type LibraryCounts struct {
+	Instructions int
+	MCP          int
+	Skills       int
+	Hooks        int
+	Subagents    int
+	RTK          int
+}
+
+type SkillRow struct {
+	Name        string
+	Description string
+	Source      string
+	Kind        string // "github", "folder", or ""
+	Origin      string
+	Repo        string
+	Icon        string
+	Agents      []string
+	Missing     bool
+	Edited      bool
+	Problems    map[string]string
+	CheckStatus string // "update", "current", "unknown", or ""
+	CheckURL    string
+	CheckCommit string
+	Behind      []string
+	Always      []string
+}
+
+type FoundSkillRow struct {
+	Name        string
+	Description string
+	Agents      []string
+	Others      []string
+	Copies      []string
+	Link        string
+	Shared      string
+	Library     string
+}
+
+type LibAgentRow struct {
+	ID       string
+	Name     string
+	Icon     string
+	Skills   string
+	Gone     bool
+	MustCopy bool
+	How      string
+	Own      bool // HowOwn: its own way over the library's
+	// ProjectSkills is the folder in a project this agent reads its own
+	// skills from, "" for one that reads none: what the project's rows
+	// give their chips.
+	ProjectSkills string
+}
+
+// HowOwn is whether the agent is given its skills its own way, rather than
+// the library's.
+func (r LibAgentRow) HowOwn() bool { return r.Own }
+
+// readLibraryData reads the library for the pages, and the problems the last
+// change couldn't write.
+//
+// glance reads what doesn't walk each agent's skill folders through
+// (library.Glance); the full read (library.Read) is what fills in the skills
+// the agents have of their own — "In your agents" — and the copies that are
+// out of date. The page draws the glance at once and takes the full read
+// after it, which is magpie's own two reads (Glance's doc, #541).
+func readLibraryData(problems []library.Problem, glance bool) LibraryData {
+	var v *library.View
+	var err error
+	if glance {
+		v, err = library.Glance(problems)
+	} else {
+		v, err = library.Read(problems)
+	}
+	if err != nil || v == nil {
+		return LibraryData{
+			Dir:     library.Dir(),
+			Backups: library.BackupDir(),
+		}
+	}
+	instrCount := 0
+	if v.Instructions != nil {
+		instrCount = len(v.Instructions.Sets)
+	}
+	ld := LibraryData{
+		Dir:        v.Dir,
+		Backups:    v.Backups,
+		CopySkills: v.CopySkills,
+		CheckDue:   v.CheckDue,
+		Partial:    v.Partial,
+		Counts: LibraryCounts{
+			Instructions: instrCount,
+			MCP:          len(v.Servers),
+			Skills:       len(v.Skills),
+			Hooks:        len(v.Hooks),
+			Subagents:    len(v.Subagents),
+			RTK:          0,
+		},
+	}
+	for _, g := range v.SkillGroups {
+		ld.SkillGroups = append(ld.SkillGroups, SkillGroupRow{Name: g.Name, Skills: g.Skills})
+	}
+	for _, n := range v.NewSkills {
+		ld.NewSkills = append(ld.NewSkills, NewSkillRow{
+			ID:          n.ID,
+			Name:        n.Name,
+			Description: n.Description,
+			Repo:        n.Repo,
+			Agents:      n.Agents,
+		})
+	}
+	for _, a := range v.Agents {
+		ld.Agents = append(ld.Agents, LibAgentRow{
+			ID:            a.ID,
+			Name:          a.Name,
+			Icon:          a.Icon,
+			Skills:        a.Skills,
+			Gone:          a.Gone,
+			MustCopy:      a.MustCopy,
+			How:           a.How,
+			Own:           a.HowOwn,
+			ProjectSkills: a.ProjectSkills,
+		})
+	}
+	for _, p := range v.Projects {
+		pr := ProjectRow{
+			Dir:      p.Dir,
+			Name:     p.Name,
+			Copy:     p.Copy,
+			Skills:   p.Skills,
+			Missing:  p.Missing,
+			Problems: p.Problems,
+			Placed:   p.Placed,
+		}
+		ld.Projects = append(ld.Projects, pr)
+	}
+	for _, p := range problems {
+		ld.Problems = append(ld.Problems, ProblemRow{
+			Agent: p.Agent,
+			What:  p.What,
+			Error: p.Error,
+			Own:   p.Own,
+		})
+	}
+	for _, s := range v.Skills {
+		sr := SkillRow{
+			Name:        s.Name,
+			Description: s.Description,
+			Source:      s.Source,
+			Kind:        s.Kind,
+			Origin:      s.Origin,
+			Repo:        s.Repo,
+			Icon:        s.Icon,
+			Agents:      s.Agents,
+			Missing:     s.Missing,
+			Edited:      s.Edited,
+			Problems:    s.Problems,
+			Behind:      s.Behind,
+			Always:      s.Always,
+		}
+		if s.Check != nil {
+			sr.CheckStatus = s.Check.Status
+			sr.CheckURL = s.Check.URL
+			sr.CheckCommit = s.Check.Commit
+		}
+		ld.Skills = append(ld.Skills, sr)
+	}
+	for _, f := range v.FoundSkills {
+		ld.FoundSkills = append(ld.FoundSkills, FoundSkillRow{
+			Name:        f.Name,
+			Description: f.Description,
+			Agents:      f.Agents,
+			Others:      f.Others,
+			Copies:      f.Copies,
+			Link:        f.Link,
+			Shared:      f.Shared,
+			Library:     f.Library,
+		})
+	}
+	return ld
+}
+
+// readData reads everything the pages draw. glance is passed to the library's
+// own read: true leaves out what walks each agent's skill folders through.
 //
 // It runs off the main thread: agent.All walks the home directory and the
 // catalog, and provider.All reads settings, so neither belongs in a frame.
@@ -67,85 +319,20 @@ type PluginRow struct {
 // magpie's own detection does — so pointing it at a test home is enough to keep
 // it off the reader's real setup (the rule magpie's tests follow; see
 // docs/06-open-questions-and-risks.md, risk O12).
-func readData() Data {
-	return Data{
-		Agents:    readAgents(),
-		Providers: readProviders(),
-		Plugins:   readPlugins(),
+func readData(problems []library.Problem, glance bool) Data {
+	agents, installs, profiles := readAgentPageData()
+	d := Data{
+		Agents:        agents,
+		AgentInstalls: installs,
+		AgentProfiles: profiles,
+		Providers:     readProviders(),
+		Gateway:       readGateway(),
+		Plugins:       readPluginsData(),
+		Library:       readLibraryData(problems, glance),
+		Routing:       readRoutingData(),
+		Usage:         ReadUsageData(UsageQuery{Tab: UsTabOverview, Period: usage.Month, Limit: 50, SessRange: "30d", CtxDays: 7}),
+		Settings:      readSettings(),
 	}
-}
-
-// readAgents lists the coding agents magpie knows, present ones first.
-//
-// agent.All is the same list magpie's own Agents page draws, detected or not;
-// agent.Detected filters it to the ones installed here.
-func readAgents() []AgentRow {
-	found := make(map[string]bool)
-	for _, a := range agent.Detected() {
-		found[a.ID] = true
-	}
-	all := agent.All()
-	rows := make([]AgentRow, 0, len(all))
-	for _, a := range all {
-		rows = append(rows, AgentRow{
-			ID:     a.ID,
-			Name:   a.Name,
-			Found:  found[a.ID],
-			Path:   a.Path,
-			Plugin: a.Plugin,
-		})
-	}
-	// Present ones first, each group keeping magpie's display order.
-	out := make([]AgentRow, 0, len(rows))
-	for _, r := range rows {
-		if r.Found {
-			out = append(out, r)
-		}
-	}
-	for _, r := range rows {
-		if !r.Found {
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
-// readProviders lists the configured vendors with what each page shows.
-func readProviders() []ProviderRow {
-	all := provider.All()
-	rows := make([]ProviderRow, 0, len(all))
-	for _, p := range all {
-		models := 0
-		if !p.Off {
-			models = len(catalog.Provider(p.ID))
-		}
-		rows = append(rows, ProviderRow{
-			ID:       p.ID,
-			Name:     p.Name,
-			Models:   models,
-			Keyed:    p.Key != "",
-			SignedIn: p.Account != nil,
-			Off:      p.Off,
-		})
-	}
-	return rows
-}
-
-// readPlugins lists the plugins registered with the runtime.
-//
-// The runtime is magpie's own (internal/pluginrt): plugins/all registers the
-// built-ins at startup, so what is registered is what is built in. A plugin
-// that is switched off in settings still appears, so the page can offer it.
-func readPlugins() []PluginRow {
-	ms := pluginrt.Registered()
-	rows := make([]PluginRow, 0, len(ms))
-	for _, m := range ms {
-		rows = append(rows, PluginRow{
-			ID:      m.ID,
-			Name:    m.Name,
-			Sub:     m.Sub,
-			Enabled: true,
-		})
-	}
-	return rows
+	saveDataCache(d)
+	return d
 }

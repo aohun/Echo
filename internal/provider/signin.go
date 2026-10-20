@@ -454,7 +454,7 @@ func (s *signInFlow) begin() error {
 		}
 		startGoogleSignIn(s, app, ln.Addr().(*net.TCPAddr).Port, challenge)
 	default:
-		return fmt.Errorf("magpie can't sign in to %s accounts", agent)
+		return fmt.Errorf("Echo can't sign in to %s accounts", agent)
 	}
 
 	if ln != nil || blocked != "" {
@@ -611,7 +611,7 @@ func (s *signInFlow) pastedCallback(raw string) error {
 	select {
 	case <-s.done:
 	case <-ctx.Done():
-		return errors.New("the sign-in is still finishing; magpie shows the account when it's done")
+		return errors.New("the sign-in is still finishing; Echo shows the account when it's done")
 	}
 	switch st := s.status(); st.State {
 	case "done":
@@ -765,7 +765,7 @@ func (s *signInFlow) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	if s.status().State != "waiting" {
-		signInPage(w, false, "This sign-in is over", "Start it again from magpie.")
+		signInPage(w, false, "This sign-in is over", "Start it again from Echo.")
 		return
 	}
 	if e := q.Get("error"); e != "" {
@@ -779,12 +779,12 @@ func (s *signInFlow) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	if q.Get("state") != s.state || q.Get("code") == "" {
 		// not ours: someone else's page, or a stale tab
-		signInPage(w, false, "This link isn't from magpie's sign-in", "Start it again from magpie.")
+		signInPage(w, false, "This link isn't from Echo's sign-in", "Start it again from Echo.")
 		return
 	}
 	if !s.claim() {
 		// its address was pasted too, and that one is being finished
-		signInPage(w, false, "This sign-in is already finishing", "magpie shows the account when it's done.")
+		signInPage(w, false, "This sign-in is already finishing", "Echo shows the account when it's done.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(s.via(r.Context()), 30*time.Second)
@@ -1031,13 +1031,11 @@ func addLogin(l savedLogin) (using bool, err error) {
 	return using, nil
 }
 
-// signInPage is what the browser shows at the end: magpie's, in its own
+// signInPage is what the browser shows at the end: Echo's, in its own
 // quiet black and white, never the vendor's "return to the CLI".
-// magpieLogo is magpie's mark (build/icon/magpie-small.svg), signing the
-// page the browser lands on after a sign-in.
-//
-//go:embed magpie.svg
-var magpieLogo string
+// echoMark signs the page the browser lands on after a sign-in: the
+// prompt, repeated.
+var echoMark = `<svg viewBox="0 0 24 24"><path d="M4.5 5.5 11 12 4.5 18.5 6.6 20.6 15.2 12 6.6 3.4Zm8.5 0L19.5 12 13 18.5l2.1 2.1L23.7 12 15.1 3.4Z"/></svg>`
 
 func signInPage(w http.ResponseWriter, ok bool, title, msg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1050,7 +1048,7 @@ func signInPage(w http.ResponseWriter, ok bool, title, msg string) {
 		mark = `<path d="M7 7l10 10M17 7L7 17"/>`
 	}
 	fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>magpie · %[1]s</title><style>
+<title>Echo · %[1]s</title><style>
 :root{--bg:#fafafa;--fg:#111;--muted:#6b6b6b;--line:#e4e4e4;--card:#fff}
 @media (prefers-color-scheme:dark){:root{--bg:#0e0e0e;--fg:#f2f2f2;--muted:#9a9a9a;--line:#262626;--card:#161616}}
 *{box-sizing:border-box}html,body{height:100%%;margin:0}
@@ -1063,5 +1061,5 @@ h1{font-size:18px;font-weight:620;margin:0 0 6px;letter-spacing:-.01em}p{margin:
 .by svg{width:20px;height:20px;fill:currentColor}
 @keyframes in{from{opacity:0;transform:translateY(6px) scale(.98)}}
 </style></head><body><div class="card"><div class="mark"><svg viewBox="0 0 24 24">%[3]s</svg></div>
-<h1>%[1]s</h1><p>%[2]s</p><div class="by">%[4]smagpie</div></div></body></html>`, html.EscapeString(title), html.EscapeString(msg), mark, magpieLogo)
+<h1>%[1]s</h1><p>%[2]s</p><div class="by">%[4]sEcho</div></div></body></html>`, html.EscapeString(title), html.EscapeString(msg), mark, echoMark)
 }

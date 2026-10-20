@@ -40,12 +40,12 @@ func TestZCodeSignInStartPlanDeviceMid(t *testing.T) {
 		t.Fatalf("quota: %+v", q)
 	}
 
-	// the id is a UUID, kept in magpie's own directory, never ZCode's
+	// the id is a UUID, kept in Echo's own directory, never ZCode's
 	id := zcodeDeviceMid()
 	if !zcodeUUIDRe.MatchString(id) || id[14] != '4' {
 		t.Fatalf("not a v4 UUID: %q", id)
 	}
-	if b, err := os.ReadFile(filepath.Join(home, ".config", "magpie", "zcode-device-mid")); err != nil || strings.TrimSpace(string(b)) != id {
+	if b, err := os.ReadFile(zcodeDevicePath()); err != nil || strings.TrimSpace(string(b)) != id {
 		t.Fatalf("kept: %v %q", err, b)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".zcode")); !os.IsNotExist(err) {

@@ -91,6 +91,11 @@ type Model struct {
 	// mode when the request says service_tier "priority" (m.fast: Cursor's
 	// plugin from 0.2.2, for a model Cursor has a fast variant of)
 	Fast bool `json:"fast"`
+	// ServiceTiers are the service tiers the plugin says its vendor serves
+	// the model at (m.serviceTiers: "priority", "ultrafast"): Codex is
+	// offered them, and a request asking for one reaches the plugin's
+	// fetch with its service_tier (#2514)
+	ServiceTiers []string `json:"serviceTiers,omitempty"`
 	// Decides is set by the plugin on a model that answers System One's
 	// questions rather than a conversation (m.decides: a decision model
 	// not named jev-…, Clef or a vendor's own). It counts only where the
@@ -1012,6 +1017,11 @@ type UsageResets struct {
 	ByWindow bool   `json:"byWindow"`
 	FiveHour int    `json:"fiveHour"`
 	Weekly   int    `json:"weekly"`
+	Team     bool   `json:"team"` // a team plan's, not the person's own
+	Each     []struct {
+		Until  string `json:"until"` // RFC 3339, "": it never runs out
+		Window string `json:"window"`
+	} `json:"each"`
 }
 
 type UsageWindow struct {

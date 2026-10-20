@@ -325,7 +325,7 @@ func TestWorkBuddyCheckinSignedIn(t *testing.T) {
 	if len(rs) != 1 || rs[0].Outcome != CheckinClaimed || rs[0].User != "旅行者" {
 		t.Fatalf("checked in: %+v", rs)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".config", "magpie", "workbuddy-checkin.json")); err != nil {
+	if _, err := os.Stat(wbCheckinPath()); err != nil {
 		t.Fatal(err)
 	}
 	if got := WorkBuddyCheckins(); len(got) != 1 || got[0].User != "旅行者" || got[0].Credit != 100 {

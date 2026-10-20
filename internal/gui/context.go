@@ -8,6 +8,7 @@ package gui
 // requests from the live trace.
 
 import (
+	"context"
 	"math"
 	"net/http"
 	"slices"
@@ -465,6 +466,12 @@ func scoreAgent(a *ctxAgent, counted bool) {
 // contextRoutes reads the routes of the days asked for: the history kept,
 // and the live trace's not yet in it.
 func contextRoutes(r *http.Request, days int) []gateway.Route {
+	return contextRoutesOf(r.Context(), days)
+}
+
+// contextRoutesOf is contextRoutes for a caller with no request: the
+// shell's Context tab reads the same routes (context_export.go).
+func contextRoutesOf(ctx context.Context, days int) []gateway.Route {
 	seen := map[int64]bool{}
 	var out []gateway.Route
 	now := time.Now()
@@ -479,7 +486,7 @@ func contextRoutes(r *http.Request, days int) []gateway.Route {
 		}
 	}
 	if gw := served.Load(); gw != nil {
-		for _, x := range gw.Trace(r.Context(), 0, 0).Routes {
+		for _, x := range gw.Trace(ctx, 0, 0).Routes {
 			if x.Done && !seen[x.ID] {
 				seen[x.ID] = true
 				out = append(out, x)

@@ -139,27 +139,61 @@ func TestMigrate(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(old, "sub", "x"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// a magpie install's own, the name this one replaced: its state is
+	// the newer one, and says dial's
+	mag := filepath.Join(cfg, "magpie")
+	if err := os.MkdirAll(mag, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mag, "providers.json"), []byte(`{"magpie":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	Migrate()
-	fi, err := os.Stat(filepath.Join(cfg, "magpie", "providers.json"))
+	// the newest name's folder is the one that copies: magpie's file over
+	// dial's, dial's nested file only where magpie's doesn't reach — here
+	// magpie's providers.json alone
+	fi, err := os.Stat(filepath.Join(cfg, "echo", "providers.json"))
 	if err != nil || runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 { // Windows has no such bits
 		t.Fatalf("providers.json not copied with its mode: %v %v", fi, err)
 	}
-	if _, err := os.Stat(filepath.Join(cfg, "magpie", "sub", "x")); err != nil {
-		t.Fatal("nested file not copied")
+	if b, _ := os.ReadFile(filepath.Join(cfg, "echo", "providers.json")); string(b) != `{"magpie":true}` {
+		t.Fatalf("the newer name's state did not say the older's over: %s", b)
 	}
 	if _, err := os.Stat(old); err != nil {
 		t.Fatal("the old folder must stay")
 	}
-	if _, err := os.Stat(filepath.Join(cache, "magpie")); err == nil {
+	if _, err := os.Stat(filepath.Join(cache, "echo")); err == nil {
 		t.Fatal("no old cache, so no new one")
 	}
 	// a second run must not touch an existing folder
-	if err := os.WriteFile(filepath.Join(cfg, "magpie", "providers.json"), []byte("new"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(cfg, "echo", "providers.json"), []byte("new"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	Migrate()
-	if b, _ := os.ReadFile(filepath.Join(cfg, "magpie", "providers.json")); string(b) != "new" {
+	if b, _ := os.ReadFile(filepath.Join(cfg, "echo", "providers.json")); string(b) != "new" {
 		t.Fatal("existing folder overwritten")
+	}
+
+	// an install that never ran magpie has only dial's, and it copies
+	cfg2, cache2 := t.TempDir(), t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg2)
+	t.Setenv("XDG_CACHE_HOME", cache2)
+	if err := os.MkdirAll(filepath.Join(cfg2, "dial", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg2, "dial", "providers.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg2, "dial", "sub", "x"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	Migrate()
+	fi, err = os.Stat(filepath.Join(cfg2, "echo", "providers.json"))
+	if err != nil || runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
+		t.Fatalf("dial's providers.json not copied with its mode: %v %v", fi, err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg2, "echo", "sub", "x")); err != nil {
+		t.Fatal("nested file not copied")
 	}
 }
 

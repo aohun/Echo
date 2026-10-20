@@ -1,8 +1,19 @@
 {
   "name": "Echo",
   "identifier": "ai.echo.app",
-  "version": "0.1.0",
-  "main": "./cmd/echo",
+  "version": "0.0.1",
+  "main": ".",
   "out": "build-echo",
-  "urlSchemes": ["echo"]
+  "icon": "internal/gui/icon-1024.png",
+  "urlSchemes": ["echo"],
+  "updates": {
+    "publicKey": "8jN9KF0FgiM/rgaPPRi5rjbeC7QyKWooqk6++2lON8c=",
+    "github": "aohun/Echo"
+  },
+  "macos": {
+    "icon": "build/darwin/Assets.car",
+    "infoPlist": {
+      "LSUIElement": true
+    }
+  }
 }

@@ -2,7 +2,11 @@
 
 package shell
 
-import "github.com/egoist/mygo/ui"
+import (
+	"fmt"
+
+	"github.com/egoist/mygo/ui"
+)
 
 // The hooks below let the acceptance check (cmd/echoprobe) drive the shell
 // without a window: the same App and the same view, rendered in memory by
@@ -60,10 +64,74 @@ func (a *App) contentMarker(p Page) string {
 		}
 		return a.text.S.NoData
 	case PagePlugins:
-		if len(a.data.Plugins) > 0 {
-			return a.data.Plugins[0].Name
+		// The Plugins page draws the tab the reader picked, and each tab's
+		// own first words are what say it drew: the built-ins' intro, the
+		// market's (which stands whatever the market answered), or what
+		// Installed says of what was added.
+		switch a.plugTab {
+		case PlugTabDiscover:
+			return a.text.S.Plug.IntroTitle
+		case PlugTabInstalled:
+			if len(a.data.Plugins.Installed) > 0 {
+				return a.data.Plugins.Installed[0].Name
+			}
+			return a.text.S.Plug.NoPlugins
+		}
+		return a.text.S.Plug.BuiltinIntro
+	case PageGateway:
+		if len(a.data.Gateway.Entries) > 0 {
+			return a.data.Gateway.Entries[0].ID
+		}
+		if a.data.Gateway.URL != "" {
+			return a.data.Gateway.URL
 		}
 		return a.text.S.NoData
+	case PageLibrary:
+		// The Library draws the tab the reader picked, and its own content
+		// is what says it drew: the skills' rows when there are any, else
+		// the line saying there are none. A tab not built yet draws the
+		// placeholder, which says so rather than looking broken.
+		if a.libTab == LibTabSkills || a.libTab == "" {
+			if len(a.data.Library.Skills) > 0 {
+				return a.data.Library.Skills[0].Name
+			}
+			return a.text.S.LibNoSkills
+		}
+		return a.text.S.ComingSoon
+	case PageRouting:
+		if len(a.data.Routing.Groups) > 0 {
+			return a.data.Routing.Groups[0].Name
+		}
+		return "实时 · 网关正在做的决定"
+	case PageUsage:
+		// The Usage page draws one of four segments, and each draws a line
+		// of its own whatever its read came back with: the filters' own
+		// words on Requests and Sessions, the note under Context, the
+		// allowance card or the empty period's words on Overview. Those
+		// are what tell the page's content from its chrome.
+		switch a.usTab {
+		case UsTabRequests:
+			return "导出 CSV"
+		case UsTabSessions:
+			return "全部模型"
+		case UsTabContext:
+			if len(a.data.Usage.Context.Agents) > 0 {
+				return "提示词的构成"
+			}
+			if len(a.data.Usage.Context.Sessions) > 0 {
+				return fmt.Sprintf("最近 %d 天里，网关读到的提示词构成；评分与标签由这些请求算出。",
+					a.data.Usage.Context.Days)
+			}
+			return "这段时间没有可分析的提示词。"
+		}
+		if a.data.Usage.Overview.Calls == 0 {
+			return a.usNoCallsIn(a.usPeriod)
+		}
+		return "次调用"
+	case PageSettings:
+		// The tab strip's first tab is the page's own content: the chrome
+		// draws the page's name (Settings), never the tabs' names.
+		return a.setTabLabel(a.setTab)
 	}
 	// A page whose own read is not written yet draws the placeholder, which
 	// says so rather than showing an empty page that looks broken.

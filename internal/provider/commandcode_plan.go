@@ -757,7 +757,7 @@ func (s *signInFlow) commandCodeCallback(w http.ResponseWriter, r *http.Request)
 		if st.State == "done" {
 			signInPage(w, true, "You're signed in", fmt.Sprintf("%s is added to magpie. You can close this tab.", st.User))
 		} else {
-			signInPage(w, false, "Sign-in didn't finish", firstNonEmpty(st.Error, "Start it again from magpie."))
+			signInPage(w, false, "Sign-in didn't finish", firstNonEmpty(st.Error, "Start it again from Echo."))
 		}
 		return
 	case r.URL.Path == "/cancel":
@@ -803,7 +803,7 @@ func (s *signInFlow) commandCodeCallback(w http.ResponseWriter, r *http.Request)
 	if got.State != s.state {
 		// not ours: someone else's page, or a stale tab
 		w.WriteHeader(http.StatusForbidden)
-		signInPage(w, false, "This link isn't from magpie's sign-in", "Start it again from magpie.")
+		signInPage(w, false, "This link isn't from Echo's sign-in", "Start it again from Echo.")
 		return
 	}
 	if s.status().State != "waiting" {

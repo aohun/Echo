@@ -53,7 +53,7 @@ func startZedSignIn(s *signInFlow) error {
 		}
 		if !s.claim() {
 			// its address was pasted too, and that one is being finished
-			signInPage(w, false, "This sign-in is already finishing", "magpie shows the account when it's done.")
+			signInPage(w, false, "This sign-in is already finishing", "Echo shows the account when it's done.")
 			return
 		}
 		select {

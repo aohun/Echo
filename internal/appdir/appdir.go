@@ -1,15 +1,17 @@
-// Package appdir decides where magpie keeps its own files: the one place
+// Package appdir decides where Echo keeps its own files: the one place
 // every other package asks (#508).
 //
-// Installed, that is ~/.config/magpie ($XDG_CONFIG_HOME/magpie) for what
-// magpie keeps and ~/.cache/magpie ($XDG_CACHE_HOME/magpie) for what it
-// can fetch again, as it always was. Portable, when a folder named "data"
-// (or a file named ".portable") sits beside magpie, everything magpie
+// Installed, that is ~/.config/echo ($XDG_CONFIG_HOME/echo) for what
+// Echo keeps and ~/.cache/echo ($XDG_CACHE_HOME/echo) for what it
+// can fetch again — Echo's own folders, carried over from magpie's
+// (~/.config/magpie, ~/.cache/magpie) by settings.Migrate, which ran as
+// the name changed. Portable, when a folder named "data"
+// (or a file named ".portable") sits beside the app, everything Echo
 // keeps goes into that data folder, its caches into data/cache and the
 // Windows webview's profile into data/webview2 (no Start-menu shortcut or
 // App Paths entry is made either), and
-// nothing of magpie's own is written to the user's profile, the way VS
-// Code's portable mode works. "Beside magpie" is the folder holding the
+// nothing of Echo's own is written to the user's profile, the way VS
+// Code's portable mode works. "Beside the app" is the folder holding the
 // executable, with links followed; for a Mac app it is the folder holding
 // Magpie.app (a file put inside the bundle would break its signature), and
 // for an AppImage the folder holding the .AppImage file, not the folder it
@@ -172,17 +174,17 @@ var sharedFolder = func(dir string) bool {
 	return false
 }
 
-// installed is the folder an installed magpie keeps its files in, or ""
+// installed is the folder an installed Echo keeps its files in, or ""
 // with no home folder.
 func installed() string {
 	if x := os.Getenv("XDG_CONFIG_HOME"); rooted(x) {
-		return filepath.Join(x, "magpie")
+		return filepath.Join(x, "echo")
 	}
 	h, err := Home()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(h, ".config", "magpie")
+	return filepath.Join(h, ".config", "echo")
 }
 
 // Beside is the folder a portable magpie run from exe keeps its data folder
@@ -221,24 +223,24 @@ func absolute(p string) string {
 	return p
 }
 
-// Config is the folder magpie keeps its settings, providers, usage and the
+// Config is the folder Echo keeps its settings, providers, usage and the
 // rest of its own state in.
 func Config() string {
 	if p := Portable(); p != "" {
 		return p
 	}
 	if x := os.Getenv("XDG_CONFIG_HOME"); rooted(x) {
-		return filepath.Join(x, "magpie")
+		return filepath.Join(x, "echo")
 	}
-	return filepath.Join(mustHome(), ".config", "magpie")
+	return filepath.Join(mustHome(), ".config", "echo")
 }
 
-// Redirected is the folder magpie keeps its files in when it is opened
-// from the Dock, the Start menu or a desktop launcher (~/.config/magpie),
-// while this magpie reads them from another that XDG_CONFIG_HOME, set in
-// the shell it was run from, names; "" when they are the same, or magpie
-// is portable. A magpie run in such a shell sees none of what the app's
-// window shows.
+// Redirected is the folder Echo keeps its files in when it is opened
+// from the Dock, the Start menu or a desktop launcher (~/.config/echo),
+// while this Echo reads them from another that XDG_CONFIG_HOME, set in
+// the shell it was run from, names; "" when they are the same, or the
+// app is portable. An Echo run in such a shell sees none of what the
+// app's window shows.
 func Redirected() string {
 	if Portable() != "" || os.Getenv("XDG_CONFIG_HOME") == "" {
 		return ""
@@ -247,22 +249,22 @@ func Redirected() string {
 	if err != nil {
 		return ""
 	}
-	if def := filepath.Join(h, ".config", "magpie"); filepath.Clean(def) != filepath.Clean(Config()) {
+	if def := filepath.Join(h, ".config", "echo"); filepath.Clean(def) != filepath.Clean(Config()) {
 		return def
 	}
 	return ""
 }
 
-// Cache is the folder for what magpie can fetch again (the models.dev
+// Cache is the folder for what Echo can fetch again (the models.dev
 // catalog, exchange rates, market lists).
 func Cache() string {
 	if p := Portable(); p != "" {
 		return filepath.Join(p, "cache")
 	}
 	if x := os.Getenv("XDG_CACHE_HOME"); rooted(x) {
-		return filepath.Join(x, "magpie")
+		return filepath.Join(x, "echo")
 	}
-	return filepath.Join(mustHome(), ".cache", "magpie")
+	return filepath.Join(mustHome(), ".cache", "echo")
 }
 
 // WebView is the folder the Windows webview (WebView2) keeps its profile
@@ -277,9 +279,9 @@ func WebView() string {
 	return ""
 }
 
-// SystemCache is the cache folder the OS names for magpie
-// (~/Library/Caches/magpie on a Mac, %LocalAppData%\magpie on Windows),
-// which a few caches have always used; portable, it is Cache.
+// SystemCache is the cache folder the OS names for Echo
+// (~/Library/Caches/echo on a Mac, %LocalAppData%\echo on Windows), which
+// a few caches have always used; portable, it is Cache.
 func SystemCache() (string, error) {
 	if p := Portable(); p != "" {
 		return filepath.Join(p, "cache"), nil
@@ -288,5 +290,5 @@ func SystemCache() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(d, "magpie"), nil
+	return filepath.Join(d, "echo"), nil
 }

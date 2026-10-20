@@ -141,7 +141,7 @@ func (s *signInFlow) kiroCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	if s.status().State != "waiting" {
-		signInPage(w, false, "This sign-in is over", "Start it again from magpie.")
+		signInPage(w, false, "This sign-in is over", "Start it again from Echo.")
 		return
 	}
 	fail := func(msg string) {
@@ -189,7 +189,7 @@ func (s *signInFlow) kiroCallback(w http.ResponseWriter, r *http.Request) {
 			AuthMethod: "IdC", Provider: k.provider, Region: k.region, ClientID: k.clientID, ClientSecret: k.clientSecret}
 	case q.Get("state") != s.state:
 		// not ours: someone else's page, or a stale tab
-		signInPage(w, false, "This link isn't from magpie's sign-in", "Start it again from magpie.")
+		signInPage(w, false, "This link isn't from Echo's sign-in", "Start it again from Echo.")
 		return
 	default:
 		switch opt := q.Get("login_option"); opt {
@@ -294,7 +294,7 @@ func (s *signInFlow) kiroCallback(w http.ResponseWriter, r *http.Request) {
 // kiroFinishing answers a second callback while the first is traded for
 // the account: the browser's own, or its address pasted into magpie.
 func kiroFinishing(w http.ResponseWriter) {
-	signInPage(w, false, "This sign-in is already finishing", "magpie shows the account when it's done.")
+	signInPage(w, false, "This sign-in is already finishing", "Echo shows the account when it's done.")
 }
 
 // awsRedirect is where AWS sends the browser back.

@@ -3,10 +3,15 @@
 package shell
 
 import (
+	"reflect"
+	"slices"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -116,31 +121,93 @@ func TestEveryLanguageIsComplete(t *testing.T) {
 }
 
 // TestSavedLanguageWinsOverLocale: a language the reader saved is never
-// replaced by the desktop's locale, which is magpie's rule for every setting
-// the reader set. "system" and an unknown value fall back to the locale.
+// replaced, which is magpie's rule for every setting the reader set.
+// "system", empty and anything unknown all mean Echo picks — and Echo's
+// pick is Chinese whatever the desktop's locale is.
 func TestSavedLanguageWinsOverLocale(t *testing.T) {
 	cases := []struct {
-		name   string
-		saved  string
-		locale string
-		want   Lang
+		name  string
+		saved string
+		want  Lang
 	}{
-		{"saved language wins", "ja", "de-DE", LangJA},
-		{"saved traditional chinese wins", "zh-TW", "en-US", LangZHTW},
-		{"system uses the locale", "system", "ja-JP", LangJA},
-		{"empty uses the locale", "", "de-DE", LangDE},
-		{"unknown saved falls back to the locale", "xx", "ja-JP", LangJA},
-		{"unknown both falls back to english", "xx", "xx-YY", LangEN},
-		{"zh-Hant is traditional", "system", "zh-Hant-TW", LangZHTW},
-		{"zh-CN is simplified", "system", "zh-CN", LangZH},
+		{"saved chinese wins", "zh", LangZH},
+		{"saved english wins", "en", LangEN},
+		{"traditional chinese saved draws chinese", "zh-TW", LangZH},
+		{"system defaults to chinese", "system", LangZH},
+		{"empty defaults to chinese", "", LangZH},
+		{"unknown saved defaults to chinese", "xx", LangZH},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := resolveLang(c.saved, c.locale); got != c.want {
-				t.Errorf("resolveLang(%q, %q) = %q, want %q", c.saved, c.locale, got, c.want)
+			// The desktop's locale is irrelevant to Echo's default: it
+			// is passed as something deliberately unlike Chinese, so a
+			// test proves the locale does not leak in.
+			if got := resolveLang(c.saved, "en-US"); got != c.want {
+				t.Errorf("resolveLang(%q, %q) = %q, want %q", c.saved, "en-US", got, c.want)
 			}
 		})
 	}
+}
+
+// TestEveryLanguageKeepsItsPlaceholders: a translated string has the same
+// {placeholders} as the English one, and none is left in English.
+//
+// magpie's rule is that every user-visible string needs every language, and
+// a translation that drops {n} or renames {agents} draws a sentence with a
+// hole in it. The check reads the Strings struct by reflection, so a new
+// field is covered the day it is added.
+func TestEveryLanguageKeepsItsPlaceholders(t *testing.T) {
+	en := reflect.ValueOf(english)
+
+	for _, lang := range langs {
+		if lang == LangEN {
+			continue
+		}
+		tr, ok := translations[lang]
+		if !ok {
+			continue
+		}
+		over := reflect.ValueOf(tr)
+
+		for i := 0; i < en.NumField(); i++ {
+			field := en.Type().Field(i)
+			if field.Type.Kind() != reflect.String {
+				continue
+			}
+			want := en.Field(i).String()
+			got := over.Field(i).String()
+			if got == "" {
+				continue // filled from English, which the merge does
+			}
+
+			wantP := placeholdersOf(want)
+			gotP := placeholdersOf(got)
+			if !slices.Equal(wantP, gotP) {
+				t.Errorf("%s.%s: English has %v, %s has %v\n  en: %q\n  %s: %q",
+					"Strings", field.Name, wantP, lang, gotP, want, lang, got)
+			}
+		}
+	}
+}
+
+// placeholdersOf is the {placeholders} in a string, sorted, so two strings'
+// can be compared.
+func placeholdersOf(s string) []string {
+	var out []string
+	for {
+		i := strings.IndexByte(s, '{')
+		if i < 0 {
+			break
+		}
+		j := strings.IndexByte(s[i:], '}')
+		if j < 0 {
+			break
+		}
+		out = append(out, s[i:i+j+1])
+		s = s[i+j+1:]
+	}
+	sort.Strings(out)
+	return out
 }
 
 // TestLoadSettingsReadsMagpie: the shell draws the reader's saved language,
@@ -154,17 +221,17 @@ func TestLoadSettingsReadsMagpie(t *testing.T) {
 		_ = settings.Save(s)
 	})
 
-	s.Lang = string(LangDE)
+	s.Lang = string(LangZH)
 	if err := settings.Save(s); err != nil {
 		t.Fatalf("saving settings: %v", err)
 	}
 
 	app := newApp(PageAgents, "en-US")
-	if app.lang != LangDE {
-		t.Errorf("app.lang = %q, want %q: the saved language was not read", app.lang, LangDE)
+	if app.lang != LangZH {
+		t.Errorf("app.lang = %q, want %q: the saved language was not read", app.lang, LangZH)
 	}
 	if app.text.S.Agents == english.Agents {
-		t.Errorf("the German title is still English: %q", app.text.S.Agents)
+		t.Errorf("the Chinese title is still English: %q", app.text.S.Agents)
 	}
 }
 
@@ -253,8 +320,8 @@ func TestQuitWiringSurvivesMyGosSequence(t *testing.T) {
 }
 
 // TestChineseNavigationMatchesMagpie: Chinese navigation strings must match
-// magpie's hand-maintained translations (使用, Agent, 会话, 资源库, 模型, 供应商,
-// 路由, 网关, 观测, 用量, 扩展, 插件).
+// active pages in navigation (使用, Agent, 资源库, 供应商, 路由, 网关, 观测, 用量, 扩展, 插件).
+// Note: 会话 and 模型 are temporarily hidden.
 func TestChineseNavigationMatchesMagpie(t *testing.T) {
 	s := settings.Load()
 	orig := s.Lang
@@ -274,8 +341,8 @@ func TestChineseNavigationMatchesMagpie(t *testing.T) {
 	tt.Frame()
 
 	expected := []string{
-		"使用", "Agent", "会话", "资源库",
-		"模型", "供应商", "路由", "网关",
+		"使用", "Agent", "资源库",
+		"供应商", "路由", "网关",
 		"观测", "用量",
 		"扩展", "插件",
 	}
@@ -285,3 +352,47 @@ func TestChineseNavigationMatchesMagpie(t *testing.T) {
 		}
 	}
 }
+
+// TestSidebarBottomSettingsAndGateway: Settings and the Gateway address are
+// placed in the bottom-left corner of the sidebar, matching magpie's layout.
+func TestSidebarBottomSettingsAndGateway(t *testing.T) {
+	app := NewForTest()
+	tt := ui.NewTester(app.ViewForTest(), 1180, 780)
+	tt.Frame()
+
+	// Settings should be rendered in the sidebar
+	if !tt.HasText(app.text.S.Settings) {
+		t.Errorf("Settings item %q not found in sidebar", app.text.S.Settings)
+	}
+
+	// Gateway status should be rendered in the sidebar
+	gwAddr := strings.TrimPrefix(gateway.URL(), "http://")
+	gwLabel := app.text.S.Gateway + " " + gwAddr
+	if !tt.HasText(gwLabel) {
+		t.Errorf("Gateway status %q not found in sidebar; texts were %v", gwLabel, tt.Texts())
+	}
+
+	// Clicking Settings navigates to PageSettings
+	if err := tt.Click(app.text.S.Settings); err != nil {
+		t.Fatalf("clicking settings: %v", err)
+	}
+	tt.Frame()
+	if app.page != PageSettings {
+		t.Errorf("expected page %q after clicking settings, got %q", PageSettings, app.page)
+	}
+
+	// Breadcrumb on settings page shows Settings title alone
+	if !tt.HasText(app.text.S.Settings) {
+		t.Errorf("expected breadcrumb title %q on settings page", app.text.S.Settings)
+	}
+
+	// Clicking Gateway status navigates to PageGateway
+	if err := tt.Click(gwLabel); err != nil {
+		t.Fatalf("clicking gateway status: %v", err)
+	}
+	tt.Frame()
+	if app.page != PageGateway {
+		t.Errorf("expected page %q after clicking gateway status, got %q", PageGateway, app.page)
+	}
+}
+

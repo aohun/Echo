@@ -101,6 +101,25 @@ func probeReport(t *testing.T, width, height int) report {
 		})
 	}
 
+	// The Settings page is not in the navigation — the gear opens it — but
+	// it is a page like the rest, and every tab of it must render its own
+	// content, the tab strip's name being what says it drew.
+	for _, tab := range setTabs {
+		app.ShowForTest(PageSettings)
+		app.setTab = tab
+		app.LoadNow()
+		tt.Frame()
+
+		title := app.setTabLabel(tab)
+		rep.Pages = append(rep.Pages, pageResult{
+			Page:    string(PageSettings) + "/" + string(tab),
+			Title:   title,
+			Present: tt.HasText(title) && tt.HasText(app.ContentMarkerForTest(PageSettings)),
+			Marker:  app.ContentMarkerForTest(PageSettings),
+			Texts:   tt.Texts(),
+		})
+	}
+
 	// The navigation must offer every page, or a page is unreachable.
 	for _, info := range app.Pages() {
 		if !tt.HasText(info.Title) {
@@ -109,7 +128,18 @@ func probeReport(t *testing.T, width, height int) report {
 		rep.Nav = append(rep.Nav, string(info.Page))
 	}
 
-	rep.OK = len(rep.Pages) == len(rep.Nav)
+	rep.OK = true
+	// every navigable page must have rendered, and everything rendered
+	// must have shown its content
+	for _, info := range app.Pages() {
+		found := false
+		for _, pr := range rep.Pages {
+			found = found || (pr.Page == string(info.Page) && pr.Present)
+		}
+		if !found {
+			rep.OK = false
+		}
+	}
 	for _, pr := range rep.Pages {
 		if !pr.Present {
 			rep.OK = false

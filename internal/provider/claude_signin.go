@@ -404,7 +404,7 @@ func (s *signInFlow) claudePaste(raw string) error {
 	select {
 	case <-s.done:
 	case <-time.After(time.Minute):
-		return errors.New("the sign-in is still finishing; magpie shows the account when it's done")
+		return errors.New("the sign-in is still finishing; Echo shows the account when it's done")
 	}
 	switch st := s.status(); st.State {
 	case "done":

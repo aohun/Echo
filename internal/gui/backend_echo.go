@@ -25,3 +25,12 @@ func StartBackend() *gateway.Server { return startBackend() }
 // StopBackend stops this process's gateway taking requests, and returns once
 // those in flight have finished.
 func StopBackend() { stopServing() }
+
+// ServedServer is the gateway this process is serving, or nil when none is:
+// another magpie may hold the port, or it may not have started yet.
+//
+// The Gateway page reads its recent calls through this — Server.Recent is a
+// pointer method on the gateway actually serving, which is the one whose
+// calls are worth showing. It is nil while the gateway is starting, so the
+// page says so rather than reading a server that isn't there.
+func ServedServer() *gateway.Server { return served.Load() }

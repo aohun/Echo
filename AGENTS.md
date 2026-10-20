@@ -56,10 +56,16 @@ touched rather than in one sweeping pass.
 
 - Docs: <https://mygo.egoist.dev/> — the authority.
 - Checkout: `/Users/wayne/Desktop/git/mygo`, tag `v0.4.5`, module
-  `github.com/egoist/mygo`, Go 1.27.1, MIT.
+  `github.com/egoist/mygo`, Go 1.27.1, MIT. The build uses **v0.5.5** (the
+  version Onevra needs); the local checkout is behind it, so read the
+  v0.5.5 sources in the module cache, not that tree.
 - Pure Go, **no cgo**: native calls go through `purego` on macOS and Linux
   and `syscall` on Windows. `mygo build` defaults to `CGO_ENABLED=0`.
 - Shell UI: native UI drawn by MyGo (package `ui`). No HTML, no JS, no webview.
+- Component library: [Onevra](https://oneo-me.github.io/onevra/zh)
+  (`github.com/oneo-me/onevra/source`) — the themed controls, the window
+  shells and the complex views the shell draws with. Look there before
+  drawing a control; see the hard rule below.
 
 ## Authorized plan: Plan A
 
@@ -80,6 +86,22 @@ Reuse magpie's domain packages unchanged; build only the shell in MyGo.
   keep passing untouched.
 - **Must keep working:** the `-tags nogui` build (TUI path), the TUI, and
   browser mode.
+
+**Exception, authorized 2026-10-18: per-feature ports from upstream.** The
+domain packages are no longer frozen as one bloc. On the user's
+authorization, eleven upstream commits after `v0.1.1265` were ported one
+feature at a time, each bringing its upstream tests as the specification:
+`ba132d68` (the GitHub list reads every page), `9fcf6a6e`/`f9ceac16`/
+`7d7dba31` (a moved subscription never moves back), `5a2414ac` (every
+built-in plugin starts on), `e44b9aef` (`onProvider` middleware),
+`e733b072` (provider service tiers), `7ba1b498` (usage resets carry the
+team's and each window's), `9b04c4e2` (async gateway request hooks),
+`b9f790d3`/`d783df46` (panels, a page that replaces a built-in one, row-menu
+actions), plus the i18n half of `a4fa7bbd`. What still holds: every touched
+package's tests keep passing, and the shell never hosts plugin HTML. A
+plugin's page, panels and actions are named in its row; the frames
+themselves stay a magpie browser-mode feature — the webview item was
+declined, not deferred.
 
 Rejected alternatives, kept for reference: Plan B (a standalone MyGo
 client against magpie's HTTP surface — low risk, weeks, but a subset and
@@ -124,6 +146,7 @@ Do not re-litigate these; they are recorded with their evidence in `docs/`.
   `~/.claude` or `~/.config/magpie`. magpie's tests avoid this with a
   `testenv` home; Echo's scaffolding, including any MyGo probe harness,
   must do the same.
+- **Never commit or push secrets, keys or local configuration (提交推送时不要带上本地密钥、key 或配置).** The repository holds source, not this machine's private things. Before every commit, read what is staged (`git status`, `git diff --cached`) and take out anything private: API keys and tokens, the updater's private key (`mygo keygen`'s private half, `MYGO_UPDATER_PRIVATE_KEY`), the signing certificates, `updater.json`, this machine's settings and providers (`~/.config/echo`), the agents' own config files, and the built app bundles and binaries. A key that was pushed once is a leaked key: rotate it, and do not push it again — not even to try a build. Keep such files out of the tree (`.gitignore`) and give a workflow what it needs through the repository's secrets, never through a file.
 - **Do not re-derive the assessment.** If a fetch of magpie or of MyGo's
   docs starts working, update the figures in `docs/01` and `docs/02`
   rather than rewriting the conclusions. The order of magnitude holds;
@@ -145,6 +168,18 @@ Do not re-litigate these; they are recorded with their evidence in `docs/`.
 - **Verify in both engines, and report it.** magpie's CI does not run the
   UI suite, so a shell change must run it locally. MyGo's Windows origin
   is a third environment worth adding to the matrix.
+- **All shell pages must observe native UI layout and spacing rules (所有页面必须严格遵守 UI 规范):**
+  - **Generous sidebar spacing (禁止紧贴左侧菜单栏):** Page content must maintain sufficient visual breathing room from the left sidebar divider. Never place page content flush against the sidebar with 0 padding or cramped 16px gutters. Main page root containers must apply consistent padding (standard `Padding(8, 24, 0, 24)` or total distance from the sidebar divider >= 36px–40px) so content harmoniously aligns with the header breadcrumbs and never hugs the left menu bar. All pages (Gateway, Providers, Agents, Settings, etc.) must observe this rule.
+  - **Fixed right-aligned copy and action buttons (复制与操作按钮固定靠右):** Copy buttons inside code snippet boxes, input containers, cards, and list rows must always remain fixed at the far right edge of their container. Use `ui.Row` with the content text/element set to `.Grow(1).Shrink(1)` and the button set to `.Shrink(0)` (or absolute pinning), ensuring the button never shifts or jumps horizontally when switching snippet tabs (Shell, curl, Python, Node) or when content length changes.
+  - **Replicated components follow magpie's styles and fills (复刻组件的样式与底色参考 magpie):** When porting or replicating any magpie component (dialogs, segmented controls, pills, inputs, sheets), read magpie's `app.css` for that component first and copy its exact look: corner radius (e.g. pills are fully rounded, `999`), font size and weight, border and hairline colors (`--line`, `.rule`), and each surface's fill — which parts are white (`--card`), which are the gray pill (`--pill`), and which take the accent's soft tint (`.mchip.on` = `--accent-soft` + accent text + 45% accent border, not a solid accent). Inputs and text areas sit on white (`t.Background`) in light mode; a segmented's track is the theme Surface gray hugging its options (`AlignSelf(ui.Start)`) with the white thumb. Never invent colors, paddings or fills that magpie's CSS does not have; when the two apps differ, magpie's wins.
+- **Look in Onevra first, and reuse what is there (先查组件库，能直接复用就直接复用):** MyGo's component library is [Onevra](https://oneo-me.github.io/onevra/zh) (`github.com/oneo-me/onevra/source`), and it is where a control comes from when a feature needs one. Before drawing a widget by hand, look the component up and use it as it is.
+  - **What is in it:** the themed controls — Button, ToggleButton, Badge, Icon (Lucide icons), Text, RichText, TextBox, NumberInput, Checkbox, Switch, Radio, Rating, Select, NativeSelect, Slider, Calendar, CalendarPicker, TimePicker, ColorPicker, ColorView, Tabs, Accordion, Collapsible, Breadcrumbs, Sidebar, Split, ScrollView, List, GridView, Tree, Table, Dialog, AlertDialog, Popover, Tooltip, Toasts, Progress, **ProgressRing**, Spinner, Skeleton, Settings, SearchSettings, Image, PixelGrid, Avatar, AvatarGroup — the window shells (`source/shells/plain`) and the theme (`source/theme`); and the complex views as packages of their own: `components/chart` (Bar, Line, Area, StackedBar, Donut, Bubble), `components/graph`, `components/command` (CommandPalette, CommandDialog), `components/code`, `components/markdown`, `components/chat`, `components/gesture`.
+  - **How to use it:** `go get github.com/oneo-me/onevra/source@latest`, then import from `github.com/oneo-me/onevra/source/components` (and the package of the view). Read the component's own page and its tests before using it (<https://oneo-me.github.io/onevra/zh/components>, pkg.go.dev) — they are the specification, as MyGo's docs are.
+  - **When it has nothing that fits:** then draw it, and say in the change that the library had nothing for it. A hand-drawn control that Onevra ships is a mistake to keep: the panel's allowance dial and the usage rows' share (`internal/shell/quota_ring.go`) were both, and are now Onevra's `ProgressRing` with the figure in the middle drawn over it.
+- **When MyGo has no component, stay in Native UI (MyGo 组件不够用时可用 Native UI):** MyGo's `ui` package — <https://mygo.egoist.dev/docs/ui> — is the shell's component library, and that page is the authority on what the shell can draw. When no widget covers what a page needs, do not fall back to a web frontend, an HTML page or a plugin webview, and do not drop the feature. Escalate in this order instead:
+  - compose the existing widgets, then reach for MyGo's own native UI primitives: a custom widget (`/docs/ui/custom-widgets`), the drawing and animation APIs (`/docs/ui/drawing`, `/docs/ui/motion`), and the text-input primitives (`/docs/ui/text-input-client`);
+  - only when MyGo cannot express the control at all may you call the platform's native UI (AppKit, GTK, Win32) through MyGo's purego interop — no cgo, `CGO_ENABLED=0` must keep building, and every other platform needs the same feature or a documented gap;
+  - the shell stays a native-UI app: no HTML, no JavaScript, no webview, no plugin HTML in the shell.
 
 ## Unverified — probe before designing around it
 
@@ -166,7 +201,8 @@ Do not re-litigate these; they are recorded with their evidence in `docs/`.
 | | |
 | --- | --- |
 | magpie | `/Users/wayne/Desktop/git/magpie` @ `9f0bd95b` |
-| MyGo | `/Users/wayne/Desktop/git/mygo` @ `v0.4.5` |
+| MyGo | `/Users/wayne/Desktop/git/mygo` @ `v0.4.5` (the build uses `v0.5.5`) |
+| Onevra | `github.com/oneo-me/onevra/source` @ `v0.2026.13` (in the module cache) |
 | Go toolchain | `go1.27.1 darwin/arm64` |
 | Build cache | the host's `~/Library/Caches/go-build` is outside the sandbox; use `GOCACHE=/tmp/...` |
 

@@ -7,18 +7,19 @@ require (
 	github.com/charmbracelet/bubbles v0.21.1
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
-	github.com/egoist/mygo v0.4.5
+	github.com/egoist/mygo v0.5.5
 	github.com/go-ole/go-ole v1.3.0
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/klauspost/compress v1.18.3
+	github.com/oneo-me/onevra/source v0.2026.13
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/tidwall/gjson v1.19.0
 	github.com/tidwall/jsonc v0.3.3
 	github.com/wailsapp/wails/v3 v3.0.0-beta.24
-	golang.org/x/net v0.56.0
-	golang.org/x/sys v0.48.0
-	golang.org/x/term v0.44.0
-	golang.org/x/text v0.42.0
+	golang.org/x/net v0.59.0
+	golang.org/x/sys v0.49.0
+	golang.org/x/term v0.46.0
+	golang.org/x/text v0.43.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/libc v1.67.6
 	modernc.org/sqlite v1.44.3
@@ -57,7 +58,9 @@ require (
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
-	golang.org/x/image v0.46.0 // indirect
+	golang.org/x/image v0.47.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+tool github.com/egoist/mygo/cmd/mygo

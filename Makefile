@@ -49,6 +49,17 @@ build:
 echo:
 	CGO_ENABLED=0 go build -tags "nogui,echo" -o echo .
 
+# echo-app is the signed app bundle the updater plugin installs: `mygo
+# build` signs it with MYGO_UPDATER_PRIVATE_KEY (`mygo keygen` wrote the
+# pair to ~/Library/Application Support/mygo/update-keys) and writes the
+# manifests the app checks — update-<platform>.json, whose URLs name
+# aohun/Echo's release of this version (mygo.json's updates). UPLOAD=1
+# hands -upload to mygo, which puts the bundle, the archives and the
+# manifests on a draft release of that repository; publishing the draft
+# is what makes the check find it.
+echo-app:
+	GOFLAGS="-tags=nogui,echo" MYGO_UPDATER_PRIVATE_KEY="$$(cat "$$HOME/Library/Application Support/mygo/update-keys/mygo-update.key")" go tool mygo build $(if $(UPLOAD),-upload)
+
 # probe is the shell's acceptance check. It renders every page of the shell
 # without a display and reports what each showed, so it needs no desktop
 # session and runs anywhere. It runs under a home of its own, with failing
@@ -91,7 +102,12 @@ app: build
 
 icons:
 	@go run build/icon/gen.go tray internal/gui/tray.png
+	@# the shell's tray wears the app icon itself, in colour, and the
+	@# template macOS tints for the menu bar
+	@go run build/icon/gen.go app 44 internal/shell/tray.png
+	@go run build/icon/gen.go tray internal/shell/tray-template.png
 	@go run build/icon/gen.go tray-flap internal/gui/trayflap
+	@go run build/icon/gen.go tray-flap internal/shell/trayflap
 	@go run build/icon/gen.go app 64 internal/gui/icon.png
 	@go run build/icon/gen.go app 1024 internal/gui/icon-1024.png
 	@rm -rf build/darwin/magpie.iconset && mkdir -p build/darwin/magpie.iconset

@@ -1,21 +1,16 @@
-//go:build ignore
-
-// Icon generator. Everything magpie shows is drawn from one bird: a round
-// little magpie in profile, tail cocked, black and white, on a 44-unit grid.
-// magpie.svg is the full drawing, its belly, shoulder and the slits in its
-// tail cut out of the black; the app tile uses it from 64px up.
-// magpie-small.svg drops the eye, which would only be a speck; the tray and
-// the smaller tiles use it, and so does the header in
-// internal/gui/assets/index.html.
+// Echo's mark: a window, and the one it repeats — the prompt in the front
+// window and its echo behind it, fainter and up to the right. The generator
+// draws every size from that one geometry: the tray's black template, the
+// tray's echo pulse (the frames internal/gui plays), the Dock glyph and the
+// app icon, light and dark.
 //
-//	go run build/icon/gen.go tray internal/gui/tray.png     # 44px black template icon (macOS menu bar)
-//	go run build/icon/gen.go tray-flap internal/gui/trayflap # its frames when clicked (a size after the folder for a bigger look)
-//	go run build/icon/gen.go app 64 internal/gui/icon.png   # app icon at a given size
-//	make icons                                              # regenerates all of them plus magpie.icns
+//	go run build/icon/gen.go tray <out.png>
+//	go run build/icon/gen.go tray-flap <dir> [frames]
+//	go run build/icon/gen.go glyph <size> <out.png>
+//	go run build/icon/gen.go app|app-dark <size> <out.png>
 package main
 
 import (
-	_ "embed"
 	"fmt"
 	"image"
 	"image/color"
@@ -24,14 +19,20 @@ import (
 	"os"
 	"sort"
 	"strconv"
-	"strings"
 )
 
+// The mark in its 44×44 box. The echo sits up and to the right, out of the
+// front window's corner, the way a repeat arrives after the first sound.
 var (
-	//go:embed magpie.svg
-	fullSVG string
-	//go:embed magpie-small.svg
-	smallSVG string
+	echoXY, echoWH, echoR = [2]float64{13, 6.5}, [2]float64{24, 18}, 4.0
+	frontXY, frontWH      = [2]float64{4.5, 13.5}, [2]float64{28, 23}
+	frontR                = 5.0
+	// the prompt: a chevron band and its cursor dot, inside the window
+	chevron = [][2]float64{
+		{12.4, 20.4}, {19.4, 25.5}, {12.4, 30.6}, // inner edge, down to the point
+		{14.8, 33.6}, {25.2, 25.5}, {14.8, 17.4}, // outer edge, back up
+	}
+	cursor = circle(27.9, 25.5, 1.55)
 )
 
 func main() {
@@ -74,99 +75,85 @@ func main() {
 	}
 }
 
-// trayK is the tray bird's size in its 22pt square: drawn to the edges it
-// was a full 22pt wide, bigger than the menu bar's own glyphs (@SherlockYoYo:
-// 感觉这只鸟有些大); at .8 it is about 18pt by 14pt, centred.
+// trayK is the mark's size in its 22pt square: drawn to the edges it was a
+// full 22pt wide, bigger than the menu bar's own glyphs; at .8 it is about
+// 18pt by 15pt, centred.
 const trayK = 0.8
 
-// tray draws the silhouette as a macOS template image (black + alpha).
+// tray draws the mark as a macOS template image (black + alpha).
 func tray() image.Image {
 	const S = 44
-	off := S / 2 * (1 - trayK)
-	cov := coverage(parse(smallSVG), S, 8, trayK, off, off)
+	off := S / 2 * (1 - trayK) // 44 is even; the offset stays whole
 	img := image.NewNRGBA(image.Rect(0, 0, S, S))
+	cov := oneColour(S, 8, trayK, off, off)
 	for i, a := range cov {
 		img.SetNRGBA(i%S, i/S, color.NRGBA{0, 0, 0, uint8(a*255 + 0.5)})
 	}
 	return img
 }
 
-// The tray bird's flap is the header logo's (internal/gui/assets/app.css,
-// .logo.wag): the drawing cut into body, tail and wing by the same clip
-// paths, each piece turned about the same point through the same keyframes
-// over the same .9s, cubic-bezier(.3, 0, .3, 1) between each two of them,
-// and the whole bird bobbing about its feet. Keep the two alike.
+// oneColour is the mark in a single ink (the tray, the Dock glyph): the
+// echo's band behind, hidden by the front window, the window's band and
+// the prompt unioned on top. Pieces join by max, not even-odd — the bands
+// overlap and even-odd would punch holes where they cross.
+func oneColour(n, ss int, k, ox, oy float64) []float64 {
+	echoBand := coverage(ringRect(echoXY, echoWH, echoR, 2.6), n, ss, k, ox, oy)
+	frontOuter := coverage(ringRect(frontXY, frontWH, frontR, 0), n, ss, k, ox, oy)
+	pieces := [][]float64{
+		coverage(ringRect(frontXY, frontWH, frontR, 3.2), n, ss, k, ox, oy),
+		coverage([][][2]float64{chevron, cursor}, n, ss, k, ox, oy),
+	}
+	out := make([]float64, n*n)
+	for i := range out {
+		a := echoBand[i] * (1 - frontOuter[i])
+		for _, pc := range pieces {
+			if pc[i] > a {
+				a = pc[i]
+			}
+		}
+		out[i] = a
+	}
+	return out
+}
+
+// The tray's motion is the echo: every .9s the back window repeats itself,
+// easing a step further out and brighter, then back to rest. The front
+// window and its prompt hold still.
 const (
 	flapSecs  = 0.9
 	flapEvery = 0.03 // a frame every 30ms: internal/gui's flap plays them so
-	// the clip paths of index.html's #bird-body (even-odd: the wing is cut
-	// out of it), #bird-tail and #bird-wing, their H and V written as L for
-	// parse
-	clipBody = "M16 0L44 0L44 44L0 44L0 26.4L10.6 26.4L13 24.2L16 19Z M29.8 18.3L26 19L22 21L17 23.5L14.6 24.7L10.6 26.4L6 29V32L9 31.5L12.5 32L16.4 31.8L19 31.4L24 28.8L28.5 24L30.6 21.4Z"
-	clipTail = "M0 0L17 0L17.2 19.6L14 25L10.6 26.4L0 26.4Z"
-	clipWing = "M29.8 18.3L26 19L22 21L17 23.5L14.6 24.7L10.6 26.4L6 29V32L9 31.5L12.5 32L16.4 31.8L19 31.4L24 28.8L28.5 24L30.6 21.4Z"
 )
 
-// A keyframe: at is the fraction of the animation, deg the rotation.
-type key struct{ at, deg float64 }
+// the echo's step out and back over the cycle
+var echoKeys = []key{{0, 0}, {.5, 1}, {1, 0}}
 
-var (
-	wingKeys = []key{{0, 0}, {.12, 10}, {.26, -3}, {.40, 8}, {.56, -2}, {.72, 3}, {1, 0}}
-	tailKeys = []key{{0, 0}, {.18, 16}, {.36, -7}, {.54, 9}, {.72, -3}, {.86, 2}, {1, 0}}
-	bobKeys  = []key{{0, 0}, {.18, -4}, {.40, 2}, {.62, -1}, {1, 0}}
-	// transform-origin, in the viewBox
-	wingAt, tailAt, bobAt = [2]float64{30, 19.8}, [2]float64{14, 22}, [2]float64{26, 38}
-)
-
-// trayFlap writes the frames the tray icon plays when it is clicked,
-// flap-01.png on, one every flapEvery of the animation, the still bird at
-// both ends left out.
 func trayFlap(dir string, S int) error {
-	bird := parse(smallSVG)
-	body, tail, wing := parse(`d="`+clipBody+`"`), parse(`d="`+clipTail+`"`), parse(`d="`+clipWing+`"`)
 	n := int(math.Round(flapSecs / flapEvery))
 	const ss = 8
 	k := float64(S) / 44
+	off := float64(S) / 2 * (1 - trayK)
+	frontBand := coverage(ringRect(frontXY, frontWH, frontR, 3.2), S, ss, k, off, off)
+	frontOuter := coverage(ringRect(frontXY, frontWH, frontR, 0), S, ss, k, off, off)
+	prompt := coverage([][][2]float64{chevron, cursor}, S, ss, k, off, off)
 	for f := 1; f < n; f++ {
 		t := float64(f) / float64(n)
-		bob, tl, wg := keyed(bobKeys, t), keyed(tailKeys, t), keyed(wingKeys, t)
-		// each piece is the bird and its clip path both turned as CSS turns
-		// the piece's group: the bob outside, the piece's own turn inside
-		m := func(rings [][][2]float64, at [2]float64, deg float64) []bool {
-			moved := make([][][2]float64, len(rings))
-			for i, r := range rings {
-				moved[i] = make([][2]float64, len(r))
-				for j, p := range r {
-					q := turn(turn(p, at, deg), bobAt, bob)
-					// shrunk about the middle, as tray() draws the still bird
-					moved[i][j] = [2]float64{22 + (q[0]-22)*trayK, 22 + (q[1]-22)*trayK}
-				}
-			}
-			return mask(moved, S*ss, k*ss)
+		d := keyed(echoKeys, t) // 0..1..0 over the cycle
+		// the echo eases out along its diagonal and brightens at the top
+		// of the step
+		moved := make([][2]float64, len(echoRing))
+		for i, p := range echoRing {
+			moved[i] = [2]float64{p[0] + d*3.2, p[1] - d*3.2}
 		}
-		pieces := [][2][]bool{
-			{m(bird, tailAt, 0), m(body, tailAt, 0)},
-			{m(bird, tailAt, tl), m(tail, tailAt, tl)},
-			{m(bird, wingAt, wg), m(wing, wingAt, wg)},
-		}
-		N := S * ss
+		echoCov := coverage([][][2]float64{moved}, S, ss, k, off, off)
 		img := image.NewNRGBA(image.Rect(0, 0, S, S))
-		for py := 0; py < S; py++ {
-			for px := 0; px < S; px++ {
-				hit := 0
-				for sy := 0; sy < ss; sy++ {
-					for sx := 0; sx < ss; sx++ {
-						i := (py*ss+sy)*N + px*ss + sx
-						for _, pc := range pieces {
-							if pc[0][i] && pc[1][i] {
-								hit++
-								break
-							}
-						}
-					}
+		for i := range frontBand {
+			a := echoCov[i] * (1 - frontOuter[i]) * (0.45 + 0.3*d)
+			for _, pc := range [][]float64{frontBand, prompt} {
+				if pc[i] > a {
+					a = pc[i]
 				}
-				img.SetNRGBA(px, py, color.NRGBA{0, 0, 0, uint8(float64(hit)/(ss*ss)*255 + 0.5)})
 			}
+			img.SetNRGBA(i%S, i/S, color.NRGBA{0, 0, 0, uint8(a*255 + 0.5)})
 		}
 		out, err := os.Create(fmt.Sprintf("%s/flap-%02d.png", dir, f))
 		if err != nil {
@@ -181,16 +168,27 @@ func trayFlap(dir string, S int) error {
 	return nil
 }
 
-// keyed is the rotation at t of keyframes played as CSS plays them, each
+// echoRing is the echo's band flattened to one ring list, so trayFlap can
+// move its points.
+var echoRing = func() [][2]float64 {
+	outer := rounded(echoXY, echoWH, echoR)
+	inner := rounded([2]float64{echoXY[0] + 2.6, echoXY[1] + 2.6}, [2]float64{echoWH[0] - 5.2, echoWH[1] - 5.2}, echoR-2.6)
+	return append(outer, inner...)
+}()
+
+// A keyframe: at is the fraction of the animation, d the distance out.
+type key struct{ at, d float64 }
+
+// keyed is the distance at t of keyframes played as CSS plays them, each
 // step eased by cubic-bezier(.3, 0, .3, 1).
 func keyed(ks []key, t float64) float64 {
 	for i := 1; i < len(ks); i++ {
 		if t <= ks[i].at {
 			a, b := ks[i-1], ks[i]
-			return a.deg + (b.deg-a.deg)*ease((t-a.at)/(b.at-a.at))
+			return a.d + (b.d-a.d)*ease((t-a.at)/(b.at-a.at))
 		}
 	}
-	return ks[len(ks)-1].deg
+	return ks[len(ks)-1].d
 }
 
 // ease is cubic-bezier(.3, 0, .3, 1): x found for the curve's parameter by
@@ -209,60 +207,23 @@ func ease(x float64) float64 {
 	return bez((lo+hi)/2, 0, 1)
 }
 
-// turn rotates p about o by deg degrees, clockwise on screen as CSS's
-// rotate() is.
-func turn(p, o [2]float64, deg float64) [2]float64 {
-	a := deg * math.Pi / 180
-	s, c := math.Sin(a), math.Cos(a)
-	dx, dy := p[0]-o[0], p[1]-o[1]
-	return [2]float64{o[0] + dx*c - dy*s, o[1] + dx*s + dy*c}
-}
-
-// mask is which of an n×n grid of samples, k to a unit, fall in the
-// rings, even-odd.
-func mask(rings [][][2]float64, n int, k float64) []bool {
-	out := make([]bool, n*n)
-	var xs []float64
-	for y := 0; y < n; y++ {
-		v := (float64(y) + 0.5) / k
-		xs = xs[:0]
-		for _, r := range rings {
-			for i, j := 0, len(r)-1; i < len(r); j, i = i, i+1 {
-				a, b := r[j], r[i]
-				if (a[1] > v) != (b[1] > v) {
-					xs = append(xs, (a[0]+(v-a[1])*(b[0]-a[0])/(b[1]-a[1]))*k)
-				}
-			}
-		}
-		sort.Float64s(xs)
-		for i := 0; i+1 < len(xs); i += 2 {
-			lo := int(math.Max(0, math.Ceil(xs[i]-0.5)))
-			hi := int(math.Min(float64(n), math.Ceil(xs[i+1]-0.5)))
-			for x := lo; x < hi; x++ {
-				out[y*n+x] = true
-			}
-		}
-	}
-	return out
-}
-
-// glyph is the bird alone, black on clear, as big on an n-pixel canvas as
+// glyph is the mark alone, black on clear, as big on an n-pixel canvas as
 // app draws it on its tile: the layer of build/darwin/AppIcon.icon, which
-// macOS 26 lays on a tile of its own, light or dark (#117).
+// macOS 26 lays on a tile of its own, light or dark.
 func glyph(n int) image.Image {
 	S := float64(n)
 	k := S * 0.8 / 44
 	o := S/2 - 22*k
-	cov := coverage(parse(fullSVG), n, 4, k, o, o)
 	img := image.NewNRGBA(image.Rect(0, 0, n, n))
+	cov := oneColour(n, 4, k, o, o)
 	for i, a := range cov {
 		img.SetNRGBA(i%n, i/n, color.NRGBA{0, 0, 0, uint8(a*255 + 0.5)})
 	}
 	return img
 }
 
-// app draws a rounded square, white shading to the palest grey, with the
-// bird on it in ink.
+// app draws the blue squircle with the echoed window on it: the repeat
+// faintly behind, the front window white, the prompt in the deep blue.
 func app(n int, dark bool) image.Image {
 	S := float64(n)
 	// macOS icon grid: the squircle occupies ~80% of the canvas
@@ -275,19 +236,18 @@ func app(n int, dark bool) image.Image {
 	if n <= 64 {
 		ss = 8
 	}
-	// under 64px the eye is a grey speck; leave it out
-	shape := fullSVG
-	if n < 64 {
-		shape = smallSVG
-	}
-	bird := coverage(parse(shape), n, ss, k, o, o)
-	bg1, bg2 := 0xff, 0xec // top, bottom
-	ink := 0x16
+	echoCov := coverage(ringRect(echoXY, echoWH, echoR, 0), n, ss, k, o, o)
+	frontCov := coverage(ringRect(frontXY, frontWH, frontR, 0), n, ss, k, o, o)
+	promptCov := coverage([][][2]float64{chevron, cursor}, n, ss, k, o, o)
+	// the tile, top colour shading to bottom; the prompt's ink on it
+	var bg1, bg2, ink [3]float64
+	bg1, bg2, ink = [3]float64{91, 156, 250}, [3]float64{47, 111, 232}, [3]float64{43, 91, 215} // #5B9CFA → #2F6FE8, #2B5BD7
+	echoA, front := .32, .97
 	if dark {
-		// the Dock's dark appearance (macOS 26): the bird in white on a
-		// dark tile, as macOS would otherwise darken the tile under a black
-		// bird and lose it (#117)
-		bg1, bg2, ink = 0x3a, 0x22, 0xf4
+		// the Dock's dark appearance (macOS 26): a dark tile, as macOS
+		// would otherwise darken the tile under a blue one and lose it
+		bg1, bg2, ink = [3]float64{52, 55, 68}, [3]float64{30, 32, 44}, [3]float64{127, 165, 255} // #343744 → #1E202C, #7FA5FF
+		echoA, front = .10, .93
 	}
 	img := image.NewNRGBA(image.Rect(0, 0, n, n))
 	for y := 0; y < n; y++ {
@@ -306,13 +266,38 @@ func app(n int, dark bool) image.Image {
 				continue
 			}
 			t := float64(y) / S
-			bg := float64(bg1)*(1-t) + float64(bg2)*t
-			a := bird[y*n+x]
-			g := uint8(bg*(1-a) + float64(ink)*a + 0.5)
-			img.SetNRGBA(x, y, color.NRGBA{g, g, g, uint8(tile / float64(ss*ss) * 255)})
+			// the pieces in draw order: echo, window, prompt
+			c := [3]float64{bg1[0] + (bg2[0]-bg1[0])*t, bg1[1] + (bg2[1]-bg1[1])*t, bg1[2] + (bg2[2]-bg1[2])*t}
+			for _, pc := range []struct {
+				cov []float64
+				ink [3]float64
+				a   float64
+			}{
+				{echoCov, [3]float64{255, 255, 255}, echoA},
+				{frontCov, [3]float64{255, 255, 255}, front},
+				{promptCov, ink, 1},
+			} {
+				a := pc.cov[y*n+x] * pc.a
+				for i := range c {
+					c[i] = c[i]*(1-a) + pc.ink[i]*a
+				}
+			}
+			img.SetNRGBA(x, y, color.NRGBA{uint8(c[0] + 0.5), uint8(c[1] + 0.5), uint8(c[2] + 0.5), uint8(tile / float64(ss*ss) * 255)})
 		}
 	}
 	return img
+}
+
+// ringRect is a window: its outer ring, or outer and inner when sw > 0,
+// even-odd filling the band between them.
+func ringRect(xy, wh [2]float64, r, sw float64) [][][2]float64 {
+	outer := rounded(xy, wh, r)
+	if sw <= 0 {
+		return [][][2]float64{outer}
+	}
+	innerXY := [2]float64{xy[0] + sw, xy[1] + sw}
+	innerWH := [2]float64{wh[0] - 2*sw, wh[1] - 2*sw}
+	return [][][2]float64{outer, rounded(innerXY, innerWH, r-sw)}
 }
 
 // coverage rasterises a shape, scaled by k and moved to (ox, oy), onto an n×n
@@ -348,51 +333,33 @@ func coverage(rings [][][2]float64, n, ss int, k, ox, oy float64) []float64 {
 	return cov
 }
 
-// parse reads the path out of one of the SVGs: absolute M, L, C and Z
-// commands, each curve cut into short segments, one polygon per subpath.
-func parse(svg string) [][][2]float64 {
-	d := svg[strings.Index(svg, ` d="`)+4:]
-	d = d[:strings.IndexByte(d, '"')]
-	f := strings.Fields(strings.NewReplacer("M", " M ", "L", " L ", "C", " C ", "Z", " Z ").Replace(d))
-	num := func(i int) float64 { x, _ := strconv.ParseFloat(f[i], 64); return x }
-	var rings [][][2]float64
+// rounded is the ring of a rounded rect, each corner's arc cut into
+// six chords.
+func rounded(xy, wh [2]float64, r float64) [][2]float64 {
+	x, y, w, h := xy[0], xy[1], wh[0], wh[1]
+	const seg = 6
 	var pts [][2]float64
-	cmd := ""
-	for i := 0; i < len(f); {
-		if c := f[i]; c == "M" || c == "L" || c == "C" || c == "Z" {
-			cmd = c
-			i++
-		}
-		switch cmd {
-		case "M", "L":
-			if cmd == "M" && len(pts) > 0 {
-				rings, pts = append(rings, pts), nil
-			}
-			pts = append(pts, [2]float64{num(i), num(i + 1)})
-			i += 2
-			cmd = "L" // further pairs after M are lines
-		case "C":
-			p := pts[len(pts)-1]
-			c := [8]float64{p[0], p[1], num(i), num(i + 1), num(i + 2), num(i + 3), num(i + 4), num(i + 5)}
-			for s := 1; s <= 8; s++ {
-				t := float64(s) / 8
-				m := 1 - t
-				pts = append(pts, [2]float64{
-					m*m*m*c[0] + 3*m*m*t*c[2] + 3*m*t*t*c[4] + t*t*t*c[6],
-					m*m*m*c[1] + 3*m*m*t*c[3] + 3*m*t*t*c[5] + t*t*t*c[7],
-				})
-			}
-			i += 6
-		case "Z":
-			if len(pts) > 0 {
-				rings, pts = append(rings, pts), nil
-			}
+	corner := func(cx, cy, a0 float64) {
+		for s := 0; s <= seg; s++ {
+			a := a0 + (math.Pi/2)*float64(s)/seg
+			pts = append(pts, [2]float64{cx + r*math.Cos(a), cy + r*math.Sin(a)})
 		}
 	}
-	if len(pts) > 0 {
-		rings = append(rings, pts)
+	corner(x+w-r, y+r, -math.Pi/2)
+	corner(x+w-r, y+h-r, 0)
+	corner(x+r, y+h-r, math.Pi/2)
+	corner(x+r, y+r, math.Pi)
+	return pts
+}
+
+// circle is the ring of a disc, 24 sides.
+func circle(cx, cy, r float64) [][2]float64 {
+	var pts [][2]float64
+	for s := 0; s < 24; s++ {
+		a := 2 * math.Pi * float64(s) / 24
+		pts = append(pts, [2]float64{cx + r*math.Cos(a), cy + r*math.Sin(a)})
 	}
-	return rings
+	return pts
 }
 
 // roundRect is a rounded square: true inside it.

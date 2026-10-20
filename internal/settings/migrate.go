@@ -9,22 +9,40 @@ import (
 )
 
 // Migrate carries the files of an install that predates the name over:
-// ~/.config/dial and ~/.cache/dial become ~/.config/magpie and
-// ~/.cache/magpie. It copies rather than moves, so a dial that is still
-// running keeps working, and it only fills folders that do not exist yet.
-// The old folders can be deleted once nothing uses them. A portable
-// magpie has only its own data folder and copies nothing in.
+// ~/.config/magpie and ~/.cache/magpie — and, for one that never ran
+// magpie, ~/.config/dial and ~/.cache/dial — become ~/.config/echo and
+// ~/.cache/echo (the app is Echo). Only the newest name's folder copies:
+// a magpie's files said dial's over as its own migration ran, so copying
+// magpie's when they are both kept carries the newer state. It copies
+// rather than moves, so a magpie that is still running keeps working,
+// and it only fills folders that do not exist yet. The old folders can
+// be deleted once nothing uses them. A portable app has only its own
+// data folder and copies nothing in.
 func Migrate() {
 	if Portable() != "" {
 		return
 	}
-	copyTree(filepath.Join(filepath.Dir(Dir()), "dial"), Dir())
+	dir := filepath.Dir(Dir())
+	src := filepath.Join(dir, "magpie")
+	if fi, err := os.Stat(src); err != nil || !fi.IsDir() {
+		src = filepath.Join(dir, "dial")
+	}
+	copyTree(src, Dir())
 	cache := appdir.Getenv("XDG_CACHE_HOME")
 	if cache == "" {
 		home, _ := os.UserHomeDir()
 		cache = filepath.Join(home, ".cache")
 	}
-	copyTree(filepath.Join(cache, "dial"), filepath.Join(cache, "magpie"))
+	csrc := filepath.Join(cache, "magpie")
+	if fi, err := os.Stat(csrc); err != nil || !fi.IsDir() {
+		csrc = filepath.Join(cache, "dial")
+	}
+	copyTree(csrc, filepath.Join(cache, "echo"))
+	// the OS's own cache folder, ~/Library/Caches on a Mac,
+	// %LocalAppData% on Windows, named magpie before this one
+	if sc, err := appdir.SystemCache(); err == nil {
+		copyTree(filepath.Join(filepath.Dir(sc), "magpie"), sc)
+	}
 }
 
 // copyTree copies src into dst, files and modes alike, when src exists and
