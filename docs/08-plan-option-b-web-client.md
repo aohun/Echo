@@ -32,26 +32,23 @@ views call the JSON API the page would have called.
 
 ## Milestones
 
-### M0 — probe the surface (read-only, no Echo code)
+### M0 — probe the surface (read-only, no Echo code) — **PASS, 2026-10-21**
 
-1. Start `magpie web --no-open --addr 127.0.0.1:3430` with a fixed
-   `MAGPIE_WEB_KEY` (minimum 16 chars).
-2. Walk every endpoint Echo's views need, from `internal/gui/api.go`:
-   `GET /api/state`, `POST /api/set`, `GET /api/settings` /
-   `POST /api/settings[/*]`, `POST /api/agents/{action}/{id}`,
-   `POST /api/agents/stage/{id}`, `GET /api/agents/preview/{id}`,
-   `GET /api/agents/cli`, `POST /api/agents/rescan`,
-   `POST /api/agents/arrange`, `POST /api/usage/arrange`,
-   `POST /api/profile/{action}`, `POST /api/sync`, `GET /api/drift`,
-   `GET /api/cli`, `GET /api/omarchy`, `POST /api/window/{action}`.
-   Record for each: request shape, response shape, which Echo view needs it.
-3. Settle `GET /api/drift` semantics (long-poll change notification?) —
-   this decides whether Echo's UI is reactive or must poll `/api/state`.
-4. Close `docs/05`'s contradiction: the endpoint table lists
-   `POST /api/agents/{action}/{id}` while the trade-off row says "no agent
-   config editing". Write down what the HTTP surface cannot do, if anything.
-5. **Gate:** every Echo view's data need is reachable, or the missing ones
-   are listed and accepted.
+Executed live. Full record:
+[09-web-client-api-surface.md](09-web-client-api-surface.md). Headlines:
+
+1. **Gate passed.** Every Echo view's data need is reachable over HTTP —
+   about 160 routes across `internal/gui`'s files, covering agents,
+   providers, routing groups, usage, sessions, plugins, library, gateway
+   internals, settings and the updater.
+2. `docs/05`'s "no agent config editing, no plugins, no library" is
+   **wrong**: all three are served (`/api/set`, `/api/plugins/*`,
+   `/api/library/*`). The browser page drives the whole app over this
+   surface.
+3. `GET /api/drift` is a cheap poll, not a push channel — Echo's UI asks
+   it on a timer, as the page does.
+4. Every write answers with the full new state; verified live with
+   `POST /api/set` (`{agent, field, value}`) in a throwaway home.
 
 ### M1 — `internal/magpieclient`
 
