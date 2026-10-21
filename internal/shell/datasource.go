@@ -1,3 +1,5 @@
+//go:build nogui && echo
+
 package shell
 
 // The data-source seam of the Option B experiment (docs/08 M3): the

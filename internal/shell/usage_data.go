@@ -256,6 +256,16 @@ func ReadUsageData(q UsageQuery) UsageData {
 
 	ud := UsageData{Query: q}
 
+	// The experiment's seam (docs/08 M4): a magpie web instance serves
+	// the overview and the ledger when the environment points at one;
+	// Sessions and Context stay local and any remote failure falls back
+	// to the embedded read below.
+	if c := remoteGateway(); c != nil {
+		if r, ok := readUsageRemote(c, q); ok {
+			return r
+		}
+	}
+
 	switch q.Tab {
 	case UsTabRequests:
 		f := usageFilterOf(q)

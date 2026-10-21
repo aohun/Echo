@@ -1,3 +1,5 @@
+//go:build nogui && echo
+
 package shell
 
 // The seam's tests (docs/08 M3): with no environment the pages read
