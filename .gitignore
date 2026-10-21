@@ -24,10 +24,8 @@ node_modules/
 npm-debug.log*
 pnpm-debug.log*
 
-# VitePress (the docs site under site/docs): its cache and its build
-# output are not source, and are written again on every build
-site/docs/.vitepress/cache/
-site/docs/.vitepress/dist/
+# Docs website (kept locally, not part of the repository)
+/site/
 
 # Editors
 .idea/

@@ -142,6 +142,8 @@ Do not re-litigate these; they are recorded with their evidence in `docs/`.
 
 ## Hard rules
 
+- **Only pull magpie when explicitly told to (只有明确要求时才拉取 magpie).** Never fetch, pull, sync or update from upstream `yetone/magpie` on your own initiative — not as a "helpful" refresh, not before starting work, not as part of another task. Reading the local magpie checkout (`/Users/wayne/Desktop/git/magpie`) or the module cache is fine; reaching for the upstream remote is not. Wait for the user to ask for a sync.
+- **Keep commits to exactly what was asked (提交代码时不做多余操作).** When committing, only stage and commit the files the task touched. No drive-by fixes, no reformatting, no regenerating code or docs, no version bumps, no updating `AGENTS.md`/`docs/` unless asked, and no push unless the user asked for it. Read the staged diff (`git status`, `git diff --cached`), and keep it scoped to the task.
 - **Never point a test at a real agent config.** Not `~/.codex`,
   `~/.claude` or `~/.config/magpie`. magpie's tests avoid this with a
   `testenv` home; Echo's scaffolding, including any MyGo probe harness,

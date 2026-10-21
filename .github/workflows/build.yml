@@ -1,14 +1,13 @@
 name: Build
 
-# Pushing to master builds the macOS disk image and the Windows installer,
-# and commits what it built to this repository, so the packages sit in the
-# tree beside the source they came from.
+# Pushing to master builds the macOS disk images and the Windows installer,
+# so a broken build is known at once, and the packages are downloadable from
+# the run.
 #
-# The build needs no signing key: the disk image is ad-hoc signed, and the
-# update archives are left out (the updater's private key never leaves the
-# machine that holds it — see the hard rule in AGENTS.md about secrets).
-# A workflow that has to sign takes the key from the repository's secrets,
-# never from a file in the tree.
+# Nothing is committed back: the repository holds source, not the built
+# app bundles and binaries (the hard rule in AGENTS.md about secrets and
+# build output). The published packages live in this repository's GitHub
+# Releases, which release.yml fills and the Homebrew cask points at.
 on:
   push:
     branches:
@@ -16,11 +15,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   macos:
-    name: macOS disk image
+    name: macOS disk images
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +28,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build the app and its disk image
+      - name: Build the app and its disk images
         env:
           # the shell is the MyGo one: nogui leaves magpie's Wails window
           # out, echo puts the native UI in its place
@@ -44,7 +43,8 @@ jobs:
           name: echo-macos
           path: |
             build-echo/**/*.dmg
-            build-echo/**/*.zip
+            build-echo/**/*.tar.gz
+            build-echo/**/update-*.json
           if-no-files-found: error
 
   windows:
@@ -71,41 +71,6 @@ jobs:
           path: |
             build-echo/**/*.exe
             build-echo/**/*.zip
+            build-echo/**/*.tar.gz
+            build-echo/**/update-*.json
           if-no-files-found: error
-
-  commit:
-    name: Commit the packages
-    needs: [macos, windows]
-    # the commit this job makes is a push of its own, and a built disk image
-    # is not the same twice: without this the workflow would keep waking
-    # itself up. Only a push from a person commits the packages.
-    if: github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # the token that pushes the packages back
-          ref: ${{ github.ref }}
-          fetch-depth: 0
-
-      - uses: actions/download-artifact@v4
-        with:
-          path: packages
-
-      - name: Put the packages in the tree
-        run: |
-          mkdir -p releases
-          find packages -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.zip' \) -exec cp {} releases/ \;
-          ls -la releases
-
-      - name: Commit and push
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add releases
-          if git diff --staged --quiet; then
-            echo "the packages are already in the tree"
-            exit 0
-          fi
-          git commit -m "项目初始化"
-          git push origin HEAD:${{ github.ref_name }}

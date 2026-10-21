@@ -22,7 +22,7 @@ and when a quota runs out, it quietly moves on to the next account.
 <a href="https://useEcho.ai/go/apinebula/readme"><picture><source media="(prefers-color-scheme: dark)" srcset="site/public/img/sponsor-apinebula-dark.svg"><img src="site/public/img/sponsor-apinebula.svg" height="36" alt="APINEBULA"></picture></a>
 <a href="https://useEcho.ai/go/zerotoken/readme"><picture><source media="(prefers-color-scheme: dark)" srcset="site/public/img/sponsor-zerotoken-dark.svg"><img src="site/public/img/sponsor-zerotoken.svg" height="36" alt="零词元"></picture></a> -->
 
-<!-- **[Download](https://useEcho.ai)** &nbsp;·&nbsp; **[Docs](https://useEcho.ai/docs/start)** &nbsp;·&nbsp; **[Full reference (English)](docs/reference.md)** &nbsp;·&nbsp; **[Plugins](https://github.com/Echo-community/plugins)** &nbsp;·&nbsp; **[Discord](https://discord.gg/vGSnD3ZKQF)** &nbsp;·&nbsp; [English](README.md) · **简体中文** -->
+<!-- **[Download](https://useEcho.ai)** &nbsp;·&nbsp; **[Docs](https://useEcho.ai/docs/en/start)** &nbsp;·&nbsp; **[Full reference (English)](docs/reference.md)** &nbsp;·&nbsp; **[Plugins](https://github.com/Echo-community/plugins)** &nbsp;·&nbsp; **[Discord](https://discord.gg/vGSnD3ZKQF)** &nbsp;·&nbsp; [English](README.md) · **简体中文** -->
 
 <br>
 
@@ -83,7 +83,7 @@ Runs on macOS, Windows and Linux (menu bar app, window, TUI, web UI and CLI), in
 curl -fsSL https://useEcho.ai/install.sh | sh
 ```
 
-<sub>Mac builds are signed and notarised, and every build updates itself. Behind a firewall, use `--proxy` or `--mirror`. Or `go install github.com/yetone/Echo@latest`, or the [Docker image](https://useEcho.ai/docs/docker).</sub>
+<sub>Mac builds are signed and notarised, and every build updates itself. Behind a firewall, use `--proxy` or `--mirror`. Or `go install github.com/yetone/Echo@latest`, or the [Docker image](https://useEcho.ai/docs/en/docker).</sub>
 
 **2 · Add a provider.** Open Echo and go to **Providers → Add provider**. Pick a preset and paste a key, or sign in with a subscription.
 
@@ -161,7 +161,7 @@ Pick a preset, paste a key. Model lists come from the vendor, with names and rea
 
 > **Presets include** Anthropic · OpenAI · Google Gemini · Amazon Bedrock (runtime and Mantle) · DeepSeek · Kimi · Zhipu GLM · MiniMax · StepFun · Qwen · Baidu Qianfan · Tencent Cloud · Huawei Cloud MaaS · Volcengine Ark · Mistral · Groq · Nous Portal · xAI · OpenRouter · Together · Fireworks · SiliconFlow · NVIDIA NIM · ModelScope · Ollama · LM Studio … and any OpenAI- or Anthropic-compatible URL.
 
-**Import** brings in the providers from CC Switch, Claude Code, Codex and Alma. **[Add to Echo](https://useEcho.ai/docs/import)** links let a provider's website hand its config to Echo in one click. Each key and each account can go through a proxy of its own.
+**Import** brings in the providers from CC Switch, Claude Code, Codex and Alma. **[Add to Echo](https://useEcho.ai/docs/en/import)** links let a provider's website hand its config to Echo in one click. Each key and each account can go through a proxy of its own.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="site/public/img/add-dark.png">
@@ -191,7 +191,7 @@ A **routing group** is several models an agent picks as one, such as `group/dail
 | **`usage`** | Use the least-used member first |
 | **`pace`** | Use the account with the most of its week left per hour until it resets |
 
-A conversation **stays with the account that answered it** while the vendor's prompt cache is worth keeping. Groups can contain groups. **[Intent routing](https://useEcho.ai/docs/intent)** has a small model of your choice read each new turn, so tests go to the strong model and quick questions to the cheap one. The Routing view shows every decision live.
+A conversation **stays with the account that answered it** while the vendor's prompt cache is worth keeping. Groups can contain groups. **[Intent routing](https://useEcho.ai/docs/en/intent)** has a small model of your choice read each new turn, so tests go to the strong model and quick questions to the cheap one. The Routing view shows every decision live.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="site/public/img/routing-dark.png">
@@ -223,7 +223,7 @@ Echo plugin add pi-antigravity         # a pi package, the same way
 Echo plugin login google-plugin        # its own sign-in flow, in Echo
 ```
 
-Plugins run on [Bun](https://bun.sh), downloaded the first time one needs it. A plugin signs in, lists its models and makes each request; agents use those models like any other provider's. Browse **[Echo-community/plugins](https://github.com/Echo-community/plugins)**, or [write your own](https://useEcho.ai/docs/plugins).
+Plugins run on [Bun](https://bun.sh), downloaded the first time one needs it. A plugin signs in, lists its models and makes each request; agents use those models like any other provider's. Browse **[Echo-community/plugins](https://github.com/Echo-community/plugins)**, or [write your own](https://useEcho.ai/docs/en/plugins).
 
 A plugin can also be **gateway middleware**: JavaScript that sees what every agent sends and gets back. `onRequest` can rewrite a request or turn it away, `onEvent` sees each streamed event, `onResponse` the whole reply. A hook that throws or runs too long leaves the request as it was.
 
@@ -252,7 +252,7 @@ Echo plugin add @Echo-community/middleware-model-map
 Echo plugin options model-map '{"mapping": {"fast": "deepseek/deepseek-chat"}}'
 ```
 
-Find them under Plugins › Discover › Gateway middleware. See [Gateway middleware](https://useEcho.ai/docs/plugins#middleware).
+Find them under Plugins › Discover › Gateway middleware. See [Gateway middleware](https://useEcho.ai/docs/en/plugins#middleware).
 
 </details> -->
 
@@ -276,8 +276,8 @@ Find them under Plugins › Discover › Gateway middleware. See [Gateway middle
 | | |
 | :-- | :-- |
 | **Local network** | Turn on *Share on local network* and give each client a named gateway key with its own daily, weekly or monthly token and cost limit |
-| **[Remote Echo](https://useEcho.ai/docs/remote)** | A laptop uses the providers, accounts and groups of the Echo on your desktop, and still wires its own agents |
-| **[Docker](https://useEcho.ai/docs/docker)** | Run `ghcr.io/yetone/Echo` on a server or a NAS and manage it from the web UI |
+| **[Remote Echo](https://useEcho.ai/docs/en/remote)** | A laptop uses the providers, accounts and groups of the Echo on your desktop, and still wires its own agents |
+| **[Docker](https://useEcho.ai/docs/en/docker)** | Run `ghcr.io/yetone/Echo` on a server or a NAS and manage it from the web UI |
 | **Sync** | Back up to a file, or sync machines over WebDAV (Nutstore, Nextcloud…), S3, or an encrypted GitHub repository backup |
 
 ### Also
@@ -293,17 +293,17 @@ Find them under Plugins › Discover › Gateway middleware. See [Gateway middle
 
 | | |
 | :-- | :-- |
-| **[Get started](https://useEcho.ai/docs/start)** | The guided tour |
+| **[Get started](https://useEcho.ai/docs/en/start)** | The guided tour |
 | **[Full reference](docs/reference.md)** (English) | Every agent, provider option, gateway endpoint, CLI command and file |
-| **[Plugins](https://useEcho.ai/docs/plugins)** | Use plugins and write your own |
-| **[Intent routing](https://useEcho.ai/docs/intent)** | Route each turn by what it asks for |
-| **[Import links](https://useEcho.ai/docs/import)** | "Add to Echo" buttons for provider websites |
-| **[Remote Echo](https://useEcho.ai/docs/remote)** | Use one Echo's providers and groups from your other computers |
-| **[Docker](https://useEcho.ai/docs/docker)** | Run Echo on a server or a NAS | -->
+| **[Plugins](https://useEcho.ai/docs/en/plugins)** | Use plugins and write your own |
+| **[Intent routing](https://useEcho.ai/docs/en/intent)** | Route each turn by what it asks for |
+| **[Import links](https://useEcho.ai/docs/en/import)** | "Add to Echo" buttons for provider websites |
+| **[Remote Echo](https://useEcho.ai/docs/en/remote)** | Use one Echo's providers and groups from your other computers |
+| **[Docker](https://useEcho.ai/docs/en/docker)** | Run Echo on a server or a NAS | -->
 <!-- 
 ## Privacy
 
-Your prompts, replies, keys and accounts go only to the providers you use. Once a day a released Echo tells us it is in use: a random id, its version and system, and which agents, providers and models it is used with, by Echo's own ids (a provider you added yourself is only `custom`), and for each partner listed first in the add sheet, how many times a day it was shown, opened and added (counts only). No names, URLs, accounts, keys, prompts or usage. Turn part or all of it off in **Settings → Privacy**, or with `DO_NOT_TRACK=1`. A partner's website and key links go through `useEcho.ai/go/…`, which counts the click, and useEcho.ai counts fetches of the partner list; the server sees these whatever the settings, and keeps no id or address. Icons named by a plugin, an import link or the library are fetched through `useEcho.ai/api/icon`, so their hosts see Cloudflare's address, not yours; the server only passes the picture on, and counts and keeps nothing. The [Privacy page](https://useEcho.ai/docs/privacy) lists everything Echo sends by itself, with an example and every switch; the [reference](docs/reference.md#counting-users) has the rules. -->
+Your prompts, replies, keys and accounts go only to the providers you use. Once a day a released Echo tells us it is in use: a random id, its version and system, and which agents, providers and models it is used with, by Echo's own ids (a provider you added yourself is only `custom`), and for each partner listed first in the add sheet, how many times a day it was shown, opened and added (counts only). No names, URLs, accounts, keys, prompts or usage. Turn part or all of it off in **Settings → Privacy**, or with `DO_NOT_TRACK=1`. A partner's website and key links go through `useEcho.ai/go/…`, which counts the click, and useEcho.ai counts fetches of the partner list; the server sees these whatever the settings, and keeps no id or address. Icons named by a plugin, an import link or the library are fetched through `useEcho.ai/api/icon`, so their hosts see Cloudflare's address, not yours; the server only passes the picture on, and counts and keeps nothing. The [Privacy page](https://useEcho.ai/docs/en/privacy) lists everything Echo sends by itself, with an example and every switch; the [reference](docs/reference.md#counting-users) has the rules. -->
 
 <!-- 
 ## Community
