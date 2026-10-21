@@ -98,6 +98,15 @@ type GatewayCall struct {
 // a gateway another magpie serves shows that one's version and no calls of
 // its own.
 func readGateway() GatewayRow {
+	// The experiment's seam: when the environment points at a magpie web
+	// instance, the page draws from it (docs/08 M3); otherwise embedded,
+	// as always.
+	if c := remoteGateway(); c != nil {
+		if g, ok := readGatewayRemote(c); ok {
+			return g
+		}
+		// The instance went away; fall through to the embedded read.
+	}
 	g := GatewayRow{URL: gateway.URL()}
 	cat := provider.Catalog()
 	g.Models = len(cat)
