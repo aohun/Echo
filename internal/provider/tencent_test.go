@@ -133,9 +133,9 @@ func TestTencentCloud(t *testing.T) {
 	// its old id, and an old id at another region, each where it says
 	for _, c := range tcRegions {
 		for _, link := range []string{
-			"magpie://import?preset=tencent-cloud&region=" + c.region,
-			"magpie://import?preset=" + c.old,
-			"magpie://import?preset=tencent-tokenhub&region=" + c.region,
+			Scheme + "://import?preset=tencent-cloud&region=" + c.region,
+			Scheme + "://import?preset=" + c.old,
+			Scheme + "://import?preset=tencent-tokenhub&region=" + c.region,
 		} {
 			p, err := ParseImport(link)
 			if err != nil {
@@ -186,7 +186,7 @@ func TestTencentCloudEnterprisePlan(t *testing.T) {
 				t.Fatalf("imported from %+v at %+v", e, got)
 			}
 		}
-		p, err := ParseImport("magpie://import?preset=tencent-cloud&region=" + c.region)
+		p, err := ParseImport(Scheme + "://import?preset=tencent-cloud&region=" + c.region)
 		if err != nil || p.Chat != r.Chat || p.Responses != r.Responses || p.Anthropic != r.Anthropic || p.KeysURL != c.keys {
 			t.Fatalf("link: %v %+v", err, p)
 		}

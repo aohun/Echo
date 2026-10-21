@@ -1085,7 +1085,13 @@ func CheckProxy(p string) error {
 
 // DefaultPort is the gateway's port unless Settings or MAGPIE_ADDR say
 // another.
-const DefaultPort = 3425
+//
+// It is a var rather than a const so that a build that serves the gateway
+// on a port of its own can name that port here: the pages draw this
+// number, and a page that drew magpie's 3425 beside a gateway serving
+// elsewhere would be saying one thing and doing another. The default build
+// keeps magpie's own 3425.
+var DefaultPort = 3425
 
 // CheckPort says what is wrong with a port for the gateway: one from 1024
 // to 65535 (below that a system wants an administrator to listen on it),

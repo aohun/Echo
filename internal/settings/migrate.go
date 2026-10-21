@@ -8,6 +8,12 @@ import (
 	"github.com/yetone/magpie/internal/appdir"
 )
 
+// migrated is what runs after the files have been carried over, for a
+// build that has something of its own to say about them. It is a var so
+// that a build tagged for another product can set it, and magpie's own
+// builds leave it doing nothing.
+var migrated = func() {}
+
 // Migrate carries the files of an install that predates the name over:
 // ~/.config/magpie and ~/.cache/magpie — and, for one that never ran
 // magpie, ~/.config/dial and ~/.cache/dial — become ~/.config/echo and
@@ -43,6 +49,7 @@ func Migrate() {
 	if sc, err := appdir.SystemCache(); err == nil {
 		copyTree(filepath.Join(filepath.Dir(sc), "magpie"), sc)
 	}
+	migrated()
 }
 
 // copyTree copies src into dst, files and modes alike, when src exists and

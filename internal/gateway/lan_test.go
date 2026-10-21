@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -107,7 +108,7 @@ func TestURLOfWildcard(t *testing.T) {
 		t.Fatal(u)
 	}
 	t.Setenv("MAGPIE_ADDR", "")
-	if u := URL(); u != "http://127.0.0.1:3425" {
+	if u := URL(); u != "http://127.0.0.1:"+strconv.Itoa(settings.DefaultPort) {
 		t.Fatal(u)
 	}
 }

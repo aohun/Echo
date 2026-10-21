@@ -36,20 +36,25 @@ import (
 // and the user says yes.
 
 // Scheme is the URL scheme magpie registers with the system.
-const Scheme = "magpie"
+//
+// It is a var rather than a const so that a build that registers a scheme
+// of its own (Echo, which forks magpie) can name that scheme here: the
+// links the system hands over, the ones a vendor writes, and the ones
+// the app says it understands must all be the same one.
+var Scheme = "magpie"
 
 // ParseImport reads an import link into the provider it describes.
 func ParseImport(link string) (Provider, error) {
 	u, err := url.Parse(strings.TrimSpace(link))
 	if err != nil || !strings.EqualFold(u.Scheme, Scheme) {
-		return Provider{}, errors.New("not a magpie:// link")
+		return Provider{}, errorf("not a %s:// link", Scheme)
 	}
 	action := u.Host
 	if action == "" { // magpie:import?… or magpie:///import?…
 		action = strings.Trim(u.Opaque+u.Path, "/")
 	}
 	if action != "import" {
-		return Provider{}, errorf("magpie://%s is not something magpie knows; links start magpie://import?", action)
+		return Provider{}, errorf("%s://%s is not something this app knows; links start %s://import?", Scheme, action, Scheme)
 	}
 	q := u.Query()
 	get := func(k string) string { return strings.TrimSpace(q.Get(k)) }

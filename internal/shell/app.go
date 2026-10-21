@@ -19,7 +19,6 @@
 package shell
 
 import (
-	"os"
 	"sync"
 	"time"
 
@@ -682,18 +681,6 @@ func newApp(page Page, locale string) *App {
 	if page == "" {
 		page = PageAgents
 	}
-	// Echo's gateway address is set here, before anything reads it, because
-	// MAGPIE_ADDR is what the whole domain reads the gateway's address
-	// through: the listener, the URL every page and the tray draw, and the
-	// configs of the agents Echo points at it. Left unset it is magpie's
-	// 3425, which is the port magpie's own app serves — so Echo launched
-	// beside magpie would be handed that one's gateway and show a window
-	// serving magpie's providers and routes.
-	//
-	// It is set on every construction rather than only in Run so that the
-	// probe, which builds the app the same way without a window, renders the
-	// address the shipped app serves.
-	os.Setenv("MAGPIE_ADDR", echoAddr())
 	a := &App{
 		page:            page,
 		sidebarOpen:     map[Group]bool{GroupWork: true, GroupModels: true, GroupInsight: true, GroupExtend: true},

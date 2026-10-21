@@ -284,9 +284,11 @@ func run(args []string) error {
 		}
 		return runTUI()
 	}
-	// a magpie:// link the system handed over (Windows, Linux): the app
-	// opens it for the user to confirm
-	if strings.HasPrefix(strings.ToLower(args[0]), "magpie:") {
+	// an import link the system handed over (Windows, Linux): the app
+	// opens it for the user to confirm. The scheme is the one this build
+	// registers (provider.Scheme), so the link the system hands over is
+	// the one this build reads.
+	if strings.HasPrefix(strings.ToLower(args[0]), provider.Scheme+":") {
 		if !hasGUI {
 			return importCmd(args)
 		}

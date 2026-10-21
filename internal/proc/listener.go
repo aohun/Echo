@@ -41,6 +41,24 @@ func Terminate(pid int) error { return terminate(pid) }
 // Kill ends process pid at once. ErrDenied when this user may not.
 func Kill(pid int) error { return kill(pid) }
 
+// magpieNames are the program names that are magpie's own: magpie, its
+// magpie-* builds or dial, its name before.
+//
+// A build that is a different product but the same program (Echo, which
+// forks magpie) adds its own name to it, so that the gateway's take-over
+// and the port guard can tell Echo from another program — the same
+// judgement, about a differently named binary.
+var magpieNames = []string{"magpie", "dial"}
+
+// magpieBundleNames are program names that are ours only inside one of
+// our own app bundles, not wherever a program of that name happens to be.
+//
+// A name is in this list rather than in magpieNames when another program
+// on the computer is called the same thing: Echo's own binary is called
+// "Echo", and so is the shell's echo — /bin/echo, which is not ours and
+// must never be ended by the gateway's take-over.
+var magpieBundleNames []string
+
 // IsMagpie says whether the program at path is a magpie: magpie, its
 // magpie-* builds or dial, its name before; with .exe, and Windows' .old
 // for one replaced by an update while it ran, or .old-2 when that one was
@@ -58,12 +76,26 @@ func IsMagpie(path string) bool {
 	n = strings.TrimSuffix(n, ".old")
 	n = strings.TrimSuffix(n, ".new")
 	n = strings.TrimSuffix(n, ".exe")
-	for _, name := range []string{"magpie", "dial"} {
+	for _, name := range magpieBundleNames {
+		if n == name && inAppBundle(path) {
+			return true
+		}
+	}
+	for _, name := range magpieNames {
 		if n == name || strings.HasPrefix(n, name+"-") || strings.HasPrefix(n, name+"_") {
 			return true
 		}
 	}
 	return false
+}
+
+// inAppBundle says whether path is a program inside a macOS app bundle
+// (…/Foo.app/Contents/MacOS/Foo), which is where our own binaries are
+// installed.
+func inAppBundle(path string) bool {
+	p := filepath.ToSlash(path)
+	i := strings.LastIndex(p, ".app/Contents/MacOS/")
+	return i > 0
 }
 
 // isOldCount is the -2, -3 an update appends when exe.old is taken too: a

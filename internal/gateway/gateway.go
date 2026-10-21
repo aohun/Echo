@@ -44,7 +44,11 @@ import (
 
 // DefaultAddr is where the gateway listens unless Settings' port or
 // MAGPIE_ADDR says otherwise.
-const DefaultAddr = "127.0.0.1:3425"
+//
+// It is a var rather than a const so that a build that serves the gateway
+// on an address of its own can name that address here. The default build
+// keeps magpie's own.
+var DefaultAddr = "127.0.0.1:3425"
 
 // Token is the bearer token agents are told to use. The gateway only
 // listens on loopback and accepts anything, but agents insist on one.

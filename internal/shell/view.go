@@ -12,6 +12,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
+	"github.com/yetone/magpie/internal/echoport"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/gui"
 	"github.com/yetone/magpie/internal/provider"
@@ -387,7 +388,7 @@ func (a *App) sidebarGatewayStatus(c *ui.Context, t *ui.Theme) {
 		gwAddr = strings.TrimPrefix(gateway.URL(), "http://")
 	}
 	if gwAddr == "" {
-		gwAddr = "127.0.0.1:3425"
+		gwAddr = echoport.Addr()
 	}
 	gwLabel := a.text.S.Gateway + " " + gwAddr
 

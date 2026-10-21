@@ -131,7 +131,7 @@ func TestXiaomiRegionCatalogs(t *testing.T) {
 			}
 		}
 		// added at that region from a link
-		p, err := ParseImport("magpie://import?preset=xiaomi&region=" + region)
+		p, err := ParseImport(Scheme + "://import?preset=xiaomi&region=" + region)
 		if err != nil {
 			t.Fatal(err)
 		}

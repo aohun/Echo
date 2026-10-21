@@ -129,8 +129,8 @@ func TestImportRenamedInPicker(t *testing.T) {
 func TestImportLinkNamedAsSubscription(t *testing.T) {
 	claudeHome(t)
 	for _, link := range []string{
-		"magpie://import?name=Claude&anthropic=https://relay-1487.example.com&key=sk-x",
-		"magpie://import?name=Relay&id=kiro&anthropic=https://relay-1487.example.com&key=sk-x",
+		Scheme + "://import?name=Claude&anthropic=https://relay-1487.example.com&key=sk-x",
+		Scheme + "://import?name=Relay&id=kiro&anthropic=https://relay-1487.example.com&key=sk-x",
 	} {
 		p, err := ParseImport(link)
 		if err != nil {
