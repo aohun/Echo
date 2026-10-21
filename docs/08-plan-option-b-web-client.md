@@ -111,6 +111,25 @@ go test ./internal/magpieclient/...   # contract tests against a pinned magpie
 Plus a memory measurement: Echo (Plan A) vs Echo-remote + magpie web,
 same workload, RSS recorded in this file.
 
+## M5 memory — first numbers (2026-10-21, indicative, not controlled)
+
+On this machine, `ps` RSS of the resident sets:
+
+| process | RSS |
+| --- | --- |
+| magpie desktop (the user's real instance, real history and accounts) | 90.6 MB |
+| its plugin host (bun) | 22.4 MB |
+| an isolated `magpie web` (throwaway home, empty log) | 25.1 MB |
+
+So the webview-less instance saves ~65 MB+ of the desktop's footprint
+before counting the WKWebView child processes the desktop app also
+carries. The comparison is confounded — the desktop instance holds real
+usage history and signed-in accounts, the probe an empty home — so the
+controlled measurement (same workload both sides, Echo-remote included)
+is still the M5 gate. What the numbers already say: the remote side's
+cost is one magpie-sized process, and Plan A's single-process form
+remains the floor both alternatives sit above.
+
 ## Contract tests against drift
 
 `magpieclient`'s tests run against a live `magpie web` from a **pinned
