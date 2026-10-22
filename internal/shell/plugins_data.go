@@ -389,6 +389,43 @@ func readPluginsData() PluginsData {
 		}
 		// The instance went away; fall through to the embedded read.
 	}
+	// The embedded read asks the plugin host, whose answers can wait on
+	// the network (an auth refresh against a vendor, a newer Bun looked
+	// up on GitHub): bound it — the last good data stands in until the
+	// read returns, the shared reload must not pay an instance's host
+	// hanging on the network.
+	done := make(chan PluginsData, 1)
+	go func() { done <- readPluginsEmbedded() }()
+	select {
+	case d := <-done:
+		return d
+	case <-time.After(pluginsEmbeddedBox):
+		// keep the read going: when it finally lands, the last good
+		// cache takes its plugins part
+		go func() {
+			d := <-done
+			if cached, ok := loadDataCache(); ok {
+				cached.Plugins = d
+				saveDataCache(cached)
+			}
+		}()
+		if cached, ok := loadDataCache(); ok {
+			return cached.Plugins
+		}
+		return PluginsData{
+			Bun:      plugin.HasBun(),
+			BunVer:   plugin.BunInUse(),
+			Mirror:   settings.Load().ChinaMirror,
+			On:       map[string]bool{},
+			Movable:  []provider.MoveCandidate{},
+			OffPages: map[string]bool{},
+		}
+	}
+}
+
+// readPluginsEmbedded is the embedded cut: the built-ins and their
+// runtime state, and what is installed.
+func readPluginsEmbedded() PluginsData {
 	builtins, broken := pluginBuiltins()
 	d := PluginsData{
 		Builtins: builtins,

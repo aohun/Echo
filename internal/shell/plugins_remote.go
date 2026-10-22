@@ -87,6 +87,12 @@ type pluginEntryRemote struct {
 // gate below covers the rest. A var so a test can shorten it.
 var pluginsRemoteBox = time.Second
 
+// pluginsEmbeddedBox is how long the shared reload waits for the
+// embedded plugins read before the last good data stands in: the read
+// asks the plugin host, whose answers can wait on the network. A var so
+// a test can shorten it.
+var pluginsEmbeddedBox = 2 * time.Second
+
 // pluginsRemoteGate keeps a plugins read that outlasted its box from
 // re-blocking every reload: for a minute after one, the page draws the
 // embedded cut at once — the same on-disk registry, without the host's
