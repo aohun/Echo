@@ -65,11 +65,12 @@ func Run(opts Options) error {
 	// app starts in it (mygo.Theme.SetSource)
 	applyThemeSource(settings.Load().Theme)
 
-	// The bundled magpie web is started before anything reads: the seam
-	// decides once (remoteGateway's sync.Once), so the instance must be
-	// answering by then (companion.go). A run the environment points
-	// itself, and one without the helper next to the binary, start none.
-	stopCompanion := startCompanion()
+	// The bundled magpie web starts while the window comes up, so the
+	// window shows at once and only the first read waits for the
+	// instance (the seam decides once, remoteGateway's sync.Once, so it
+	// must be answering by then). A run the environment points itself,
+	// and one without the helper next to the binary, decide at once.
+	companionReady, stopCompanion := startCompanion()
 
 	// The gateway starts before the window, as magpie's own app starts it:
 	// it is the product's reason to exist, and an agent may be waiting on
@@ -78,8 +79,19 @@ func Run(opts Options) error {
 	//
 	// newApp has set MAGPIE_ADDR to Echo's own address (echoAddr), which is
 	// what decides where this one listens.
+	//
+	// But one gateway serves, never two (gateway.WhileServing): when an
+	// instance answers the seam, its gateway is the one the agents' routes
+	// point at, and a second one here would keep rewriting the configs
+	// under it — the drift a page then reports flaps between them. So the
+	// shell's own gateway starts only when no instance answered.
 	if !opts.NoBackend {
-		go gui.StartBackend()
+		go func() {
+			<-companionReady
+			if remoteGateway() == nil {
+				gui.StartBackend()
+			}
+		}()
 	}
 
 	mygo.App.WhenReady(func() {
@@ -129,9 +141,15 @@ func Run(opts Options) error {
 		if !opts.Hidden {
 			a.win.Show()
 		}
-		// The pages' data is read after the window is up, so the window
-		// appears at once and fills in as the read lands.
-		a.Reload()
+		// The pages' data is read once the bundled instance has decided
+		// (the window is already up, so the wait costs nothing the reader
+		// sees but an empty page filling in).
+		go func() {
+			<-companionReady
+			a.win.Update(func() {
+				a.Reload()
+			})
+		}()
 	})
 
 	// A quit closes every window before OnWillQuit runs, and the window's

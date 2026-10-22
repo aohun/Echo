@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -40,15 +41,40 @@ type companionState struct {
 	Key string `json:"key"` // the run key, both sides of the pair read it
 }
 
-// startCompanion points the remote seam at the bundled magpie web: the
-// instance the saved state names is reused when it answers its probe, a
-// fresh one is started otherwise. It runs before anything reads, because
-// remoteGateway decides once (sync.Once) — a seam set late would leave
-// the whole session embedded.
+// startCompanion points the remote seam at the bundled magpie web while
+// the window comes up: the instance the saved state names is reused when
+// it answers its probe, a fresh one is started otherwise. The channel
+// closes once the seam is decided — set, or left unset on purpose — and
+// the first read waits for it, because remoteGateway decides once
+// (sync.Once): a seam set late would leave the whole session embedded.
 //
-// It returns the write that stops the instance it started, or nil when
-// it reused one, pointed at the environment's own, or found no helper.
-func startCompanion() func() {
+// The write stops the instance this launch started, and is nil when it
+// reused one, pointed at the environment's own, or found no helper.
+func startCompanion() (<-chan struct{}, func()) {
+	ready := make(chan struct{})
+	var mu sync.Mutex
+	var started *exec.Cmd
+	go func() {
+		defer close(ready)
+		if cmd := companionStart(); cmd != nil {
+			mu.Lock()
+			started = cmd
+			mu.Unlock()
+		}
+	}()
+	return ready, func() {
+		mu.Lock()
+		if started != nil {
+			_ = started.Process.Kill()
+		}
+		mu.Unlock()
+	}
+}
+
+// companionStart is the deciding itself, run off the main thread so the
+// window need not wait for an instance to come up. It returns the
+// instance it spawned, nil otherwise.
+func companionStart() *exec.Cmd {
 	if os.Getenv(remoteEnvAddr) != "" {
 		return nil // the environment's own instance wins
 	}
@@ -99,10 +125,7 @@ func startCompanion() func() {
 
 	os.Setenv(remoteEnvAddr, addr)
 	os.Setenv(remoteEnvKey, st.Key)
-	if cmd == nil {
-		return nil
-	}
-	return func() { _ = cmd.Process.Kill() }
+	return cmd
 }
 
 // companionHealthy says the instance answers its probe with the key.
