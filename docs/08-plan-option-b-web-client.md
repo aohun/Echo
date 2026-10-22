@@ -100,7 +100,7 @@ then the rest. Every page keeps both implementations building.
 Views with no HTTP backing (anything M0 listed as unreachable) keep the
 embedded implementation. Do not fake them over the gateway's `/v1/*`.
 
-### M5 — acceptance
+### M5 — acceptance — **PASS, 2026-10-22**
 
 ```sh
 make echo && make probe               # shell still renders, both modes
@@ -123,20 +123,64 @@ On this machine, `ps` RSS of the resident sets:
 
 So the webview-less instance saves ~65 MB+ of the desktop's footprint
 before counting the WKWebView child processes the desktop app also
-carries. The comparison is confounded — the desktop instance holds real
-usage history and signed-in accounts, the probe an empty home — so the
-controlled measurement (same workload both sides, Echo-remote included)
-is still the M5 gate. What the numbers already say: the remote side's
-cost is one magpie-sized process, and Plan A's single-process form
-remains the floor both alternatives sit above.
+carries. What those numbers did not say is measured below.
+
+## M5 memory — the controlled measurement (2026-10-22)
+
+Same workload both sides: the probe (`TestProbe`) rendering every page
+of the shell, run once against the embedded domain packages (Plan A) and
+once with the seam pointed at a live `magpie web` holding the same
+empty home the testenv makes. One instrument for every process:
+`/usr/bin/time -l`'s peak resident set. Both echo numbers are the same
+test binary, so only the data source differs.
+
+| measurement | peak RSS |
+| --- | --- |
+| Echo Plan A — the probe, embedded | 183.6 MB |
+| Echo-remote — the same probe, reading the instance | 183.2 MB |
+| `magpie web`, idle (boot + one `/api/state` read) | 181.5 MB |
+| `magpie web`, having served the probe's reads | 193.1 MB |
+| **remote side, whole** (echo + magpie) | **≈ 376 MB** |
+
+Reading:
+
+1. **The remote reads cost Echo nothing worth naming.** The same binary
+   peaks within 0.4 MB of itself either way: rendering, not data
+   fetching, is what Echo's process does.
+2. **The remote side's cost is one magpie-sized process**, and under
+   this instrument a magpie `web` peaks around 182–193 MB whether idle
+   or serving. The remote alternative roughly doubles the peak: two Go
+   processes each carrying the domain layer, against Plan A's one.
+   (The M0 note above measured `ps` snapshots of an idle instance —
+   25.1 MB — which Go's returned-to-OS pages explain; peaks are the
+   honest like-for-like number.)
+3. **Plan A's single-process form remains the floor**, as the cost table
+   above predicted. What the experiment buys — upstream tracking — is
+   paid for at about 2× peak memory on this workload, with the desktop
+   magpie's webview tree still absent.
 
 ## Contract tests against drift
 
-`magpieclient`'s tests run against a live `magpie web` from a **pinned
-upstream version** (recorded here when M0 lands). The suite re-runs M0's
-recordings: shape checks on every response Echo reads. When magpie moves,
-a red contract test names the endpoint that drifted — the same role
-magpie's own generated-client contract plays.
+`magpieclient`'s contract test (`TestContractAgainstThePinnedMagpie`)
+builds a live `magpie web` from the **pinned upstream checkout** and
+re-runs M0's recordings against it: a shape check on every response Echo
+reads — settings, state, drift, providers (with the provider off/on and
+arrange writes), groups (with the save, read-back and delete writes),
+usage, requests, quotas, and the APIError an unknown `/api/set` answers.
+
+The pin (recorded 2026-10-22): magpie checkout
+`9f0bd95bad7dd0dbe22c97c7aaa42c1230c21aa1` (2026-10-06, "fork: Codex
+reset alerts"). `ECHO_MAGPIE_CHECKOUT` moves the checkout; the test
+skips when there is none, the toolchain cannot build magpie, or the
+checkout is no longer at the pin — re-record and move the pin when
+magpie moves. The instance runs the way M0 probed it: a throwaway home,
+a generated run key held in memory, nothing of this machine's real
+configuration read or written.
+
+The live run already caught one shape fact the fakes had wrong: the
+gateway document's `version` is another magpie's, serving it — an
+instance serving its own gateway answers `running: true, mine: true`
+with no version at all.
 
 ## Red lines
 
