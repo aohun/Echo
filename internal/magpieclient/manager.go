@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/proc"
 )
 
 // Manager owns one spawned magpie web process.
@@ -104,7 +106,7 @@ func (m *Manager) spawn(ctx context.Context, backoff int) error {
 		case <-time.After(wait):
 		}
 	}
-	cmd := exec.CommandContext(ctx, m.Bin, "web", "--no-open", "--addr", m.Addr)
+	cmd := proc.CommandContext(ctx, m.Bin, "web", "--no-open", "--addr", m.Addr)
 	cmd.Env = append(m.Env, "MAGPIE_WEB_KEY="+m.Key, "MAGPIE_WEB_RUNKEY="+m.Key)
 	// Stop is an interrupt — the Ctrl-C magpie treats as quit, draining
 	// its in-flight gateway requests — with a kill only if it ignores it.
