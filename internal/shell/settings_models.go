@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -180,7 +179,7 @@ func (a *App) setSearchAPIs(c *ui.Context, t *ui.Theme, snap SettingsSnap) {
 						a.revealSearchKey(vendor)
 					}
 					if a.smallBtn(c, t, a.text.S.Set.RuleRemove) {
-						a.settingsWrite(func() error { return provider.RemoveSearchAPI(vendor) }, func(err error) {
+						a.settingsWrite(func() error { return searchAPIRemove(vendor) }, func(err error) {
 							if err != nil {
 								a.setSetNotice(err.Error(), true)
 							}
@@ -212,9 +211,7 @@ func (a *App) setSearchAPIs(c *ui.Context, t *ui.Theme, snap SettingsSnap) {
 				}
 				if a.smallBtn(c, t, a.text.S.Add) {
 					a.settingsWrite(func() error {
-						return provider.SetSearchAPI(provider.SearchAPI{
-							Vendor: vendor, Key: strings.TrimSpace(a.setSearchKey), URL: strings.TrimSpace(a.setSearchURL),
-						})
+						return searchAPISet(vendor, strings.TrimSpace(a.setSearchKey), strings.TrimSpace(a.setSearchURL))
 					}, func(err error) {
 						if err == nil {
 							a.setSearchKey, a.setSearchURL, a.setSearchErr = "", "", ""
@@ -266,12 +263,7 @@ func (a *App) setRevealLabel(vendor string) string {
 // where the row shows it, as magpie's settings/search-key does.
 func (a *App) revealSearchKey(vendor string) {
 	go func() {
-		key := ""
-		for _, a := range provider.StoredSearchAPIs() {
-			if a.Vendor == vendor {
-				key = a.Key
-			}
-		}
+		key, _ := searchKeyReveal(vendor)
 		if a.win == nil {
 			return
 		}

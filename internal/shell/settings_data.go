@@ -134,6 +134,14 @@ type SettingsSnap struct {
 // readSettings gathers what the Settings page draws, as magpie's
 // settingsState does. It is called off the main thread.
 func readSettings() SettingsSnap {
+	// The experiment's seam (docs/08 M4): the page's snap from a magpie
+	// web instance when the environment points at one; embedded otherwise.
+	if c := remoteGateway(); c != nil {
+		if snap, ok := readSettingsRemote(c); ok {
+			return snap
+		}
+		// The instance went away; fall through to the embedded read.
+	}
 	s := settings.Load()
 	snap := SettingsSnap{
 		S:           s,
@@ -356,6 +364,15 @@ func proxyNowText() string {
 // pages own the way magpie's POST /api/settings does, and runs the
 // follow-ups a change asks for. It must run off the main thread.
 func saveSettings(mutate func(s *settings.Settings)) error {
+	// The experiment's seam (docs/08 M4): the save is asked of a magpie
+	// web instance when the environment points at one — its document
+	// read, the change made on it, the whole posted back; any remote
+	// failure falls back to the embedded save below.
+	if c := remoteGateway(); c != nil {
+		if err := settingsSaveRemote(c, mutate); err == nil {
+			return nil
+		}
+	}
 	cur := settings.Load()
 	in := cur
 	mutate(&in)

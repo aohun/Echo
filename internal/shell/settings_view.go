@@ -22,7 +22,6 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
-	"github.com/yetone/magpie/internal/autostart"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -362,7 +361,7 @@ func (a *App) settingsGeneral(c *ui.Context, t *ui.Theme) {
 
 		a.setCard(c, t, a.text.S.Set.StartUp, func() {
 			a.setSwitchRow(c, t, a.text.S.Set.LoginStart, a.text.S.Set.LoginSub, &login, func(on bool) {
-				a.settingsWrite(func() error { return autostart.Set(on) }, nil)
+				a.settingsWrite(func() error { return settingsLogin(on) }, nil)
 			})
 			if runtime.GOOS == "darwin" {
 				a.setSegRow(c, t, a.text.S.Set.KeepAwake, awakeSub, &awakeIdx, func(i int) {

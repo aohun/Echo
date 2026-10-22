@@ -11,8 +11,6 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/yetone/magpie/internal/access"
-	"github.com/yetone/magpie/internal/gui"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -141,16 +139,11 @@ func (a *App) settingsNetwork(c *ui.Context, t *ui.Theme) {
 			lanOn := s.LAN
 			a.setSwitchRow(c, t, a.text.S.Set.LAN, a.text.S.Set.LANSub, &lanOn, func(on bool) {
 				a.settingsWrite(func() error {
-					// ConfigureLAN saves the sharing and its key; the
-					// gateway this process serves is moved onto it after,
-					// as magpie's settings/lan does
-					if err := access.ConfigureLAN(on, false); err != nil {
-						return err
-					}
-					if gw := gui.ServedServer(); gw != nil {
-						return gw.Relisten()
-					}
-					return nil
+					// the sharing and its key saved, and the gateway
+					// serving them moved onto it, as magpie's
+					// settings/lan does — asked of the instance when the
+					// environment points at one
+					return settingsLAN(on, false)
 				}, nil)
 			})
 			if lanOn && len(snap.LANURLs) > 0 {
@@ -195,7 +188,10 @@ func (a *App) applyPort(draft string) {
 		a.setPortErr = ""
 	}
 	a.settingsWrite(func() error {
-		res, err := gui.SetPort(p)
+		// asked of the instance when the environment points at one —
+		// its gateway and its agents move, as magpie's settings/port
+		// moves this process's
+		res, err := settingsPort(p)
 		if err != nil {
 			return err
 		}
