@@ -767,6 +767,7 @@ func (a *App) Reload() {
 			// asked for is now either confirmed or corrected by the data
 			a.agWireHint = nil
 			a.data, a.loading, a.err = glance, false, nil
+			logStartupRead()
 		})
 		a.loadCLIsAsync()
 

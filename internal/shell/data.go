@@ -320,6 +320,12 @@ func readLibraryData(problems []library.Problem, glance bool) LibraryData {
 // it off the reader's real setup (the rule magpie's tests follow; see
 // docs/06-open-questions-and-risks.md, risk O12).
 func readData(problems []library.Problem, glance bool) Data {
+	// The plugins read is the one that can wait seconds for its document
+	// (its own box on a magpie web instance, whose plugin host can wait
+	// on the network): read it beside the others rather than in front of
+	// them, so the glance lands when the fastest of the reads does.
+	plugins := make(chan PluginsData, 1)
+	go func() { plugins <- readPluginsData() }()
 	agents, installs, profiles := readAgentPageData()
 	d := Data{
 		Agents:        agents,
@@ -327,7 +333,7 @@ func readData(problems []library.Problem, glance bool) Data {
 		AgentProfiles: profiles,
 		Providers:     readProviders(),
 		Gateway:       readGateway(),
-		Plugins:       readPluginsData(),
+		Plugins:       <-plugins,
 		Library:       readLibraryData(problems, glance),
 		Routing:       readRoutingData(),
 		Usage:         ReadUsageData(UsageQuery{Tab: UsTabOverview, Period: usage.Month, Limit: 50, SessRange: "30d", CtxDays: 7}),

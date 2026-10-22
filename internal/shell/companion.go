@@ -41,6 +41,34 @@ type companionState struct {
 	Key string `json:"key"` // the run key, both sides of the pair read it
 }
 
+// teeCompanionLog sends the shell's log to a file in the app's own data
+// dir, beside a Finder launch that has no stderr to show it on. Only a
+// bundled app does this — a dev run logs to the terminal it came from.
+// The file starts over past two megabytes, so a launch that logs much
+// cannot grow it forever.
+func teeCompanionLog() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(exe), companionHelper)); err != nil {
+		return // not a bundled app: dev run, test or probe
+	}
+	dir, err := mygo.App.Path(mygo.PathUserData)
+	if err != nil {
+		return
+	}
+	path := filepath.Join(dir, "echo.log")
+	if info, err := os.Stat(path); err == nil && info.Size() > 2<<20 {
+		_ = os.Remove(path)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, f))
+}
+
 // startCompanion points the remote seam at the bundled magpie web while
 // the window comes up: the instance the saved state names is reused when
 // it answers its probe, a fresh one is started otherwise. The channel

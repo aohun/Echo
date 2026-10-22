@@ -18,7 +18,7 @@ package shell
 // only when the write stays here).
 //
 // What stays embedded even in remote mode:
-//   - A plugins read that outlasts its 3-second box (the document asks
+//   - A plugins read that outlasts its one-second box (the document asks
 //     the instance's plugin host, whose answers can wait on the
 //     network): the page draws the embedded cut at once for a minute
 //     and tries the instance again after — the shared reload must not
@@ -81,9 +81,11 @@ type pluginEntryRemote struct {
 // instance's plugins document. The document asks the instance's plugin
 // host, whose answers can wait on the network (an auth refresh against a
 // vendor, a newer Bun looked up on GitHub) — magpie gives it a minute,
-// which the page's whole-data reload cannot pay for every pass. A var so
-// a test can shorten it.
-var pluginsRemoteBox = 3 * time.Second
+// which the page's whole-data reload cannot pay for every pass. One
+// second: a healthy instance answers within it, a host stuck on the
+// network does not answer within any box this reload could pay, and the
+// gate below covers the rest. A var so a test can shorten it.
+var pluginsRemoteBox = time.Second
 
 // pluginsRemoteGate keeps a plugins read that outlasted its box from
 // re-blocking every reload: for a minute after one, the page draws the

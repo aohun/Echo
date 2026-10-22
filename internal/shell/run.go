@@ -4,6 +4,8 @@ package shell
 
 import (
 	"log"
+	"sync"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater/native"
@@ -37,11 +39,35 @@ type Options struct {
 // panic out of a render that has no app under it (the probe, a test).
 var shellUpdatesWired bool
 
+// startupAt is when Run began, and startupReadLogged fires once the
+// first read lands: the two ends of what a reader waits through.
+var (
+	startupAt          time.Time
+	startupReadLogged  sync.Once
+)
+
+// logStartupRead logs, once, when the first read's glance has landed.
+func logStartupRead() {
+	startupReadLogged.Do(func() {
+		log.Printf("echo: startup: %-24s %dms", "first data landed",
+			time.Since(startupAt).Milliseconds())
+	})
+}
+
 // Run starts Echo: it reads magpie's settings, starts what serves the agents,
 // opens the window and the menu bar icon, and blocks until the app quits.
 //
 // It must be called from main: MyGo runs its event loop on the main goroutine.
 func Run(opts Options) error {
+	// what each startup step cost, so a slow start can be read rather
+	// than felt: the steps a slow launch walks are logged with their
+	// time since Run began
+	teeCompanionLog()
+	startupAt = time.Now()
+	step := func(what string) {
+		log.Printf("echo: startup: %-24s %dms", what, time.Since(startupAt).Milliseconds())
+	}
+	step("run begins")
 	if opts.Width == 0 {
 		opts.Width, opts.Height = 1180, 780
 	}
@@ -60,6 +86,7 @@ func Run(opts Options) error {
 
 	a := newApp(opts.Page, mygo.App.Locale())
 	setCurrent(a)
+	step("app state built")
 
 	// the appearance the reader saved, before the window is built, so the
 	// app starts in it (mygo.Theme.SetSource)
@@ -95,6 +122,7 @@ func Run(opts Options) error {
 	}
 
 	mygo.App.WhenReady(func() {
+		step("when ready fired")
 		a.win = mygo.NewWindow(mygo.WindowOptions{
 			Title:         a.text.S.AppName,
 			Width:         opts.Width,
@@ -140,12 +168,14 @@ func Run(opts Options) error {
 		}
 		if !opts.Hidden {
 			a.win.Show()
+			step("window shown")
 		}
 		// The pages' data is read once the bundled instance has decided
 		// (the window is already up, so the wait costs nothing the reader
 		// sees but an empty page filling in).
 		go func() {
 			<-companionReady
+			step("companion decided")
 			a.win.Update(func() {
 				a.Reload()
 			})
