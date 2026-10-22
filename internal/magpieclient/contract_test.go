@@ -218,12 +218,20 @@ func TestContractAgainstThePinnedMagpie(t *testing.T) {
 		t.Errorf("/api/usage/quotas: %v", err)
 	}
 
-	// /api/gateway/history: the Routing page's history — the gateway's
-	// own routes, priced and titled by the instance.
-	if h, err := c.GatewayHistory(ctx, ""); err != nil {
+	// /api/gateway/history: one named day gone by, priced and titled by
+	// the instance.
+	if h, err := c.GatewayHistory(ctx, "1970-01-01"); err != nil {
 		t.Errorf("/api/gateway/history: %v", err)
 	} else if h.Cut {
 		t.Log("/api/gateway/history: the instance's history was cut")
+	}
+
+	// /api/gateway/trace: the live routes and totals the Routing page
+	// plays — the gateway's own memory.
+	if tr, err := c.GatewayTrace(ctx); err != nil {
+		t.Errorf("/api/gateway/trace: %v", err)
+	} else if !tr.Mine {
+		t.Log("/api/gateway/trace: the instance does not serve the gateway")
 	}
 
 	// /api/set: with no agent named, the instance's error is the

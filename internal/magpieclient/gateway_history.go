@@ -1,8 +1,8 @@
 package magpieclient
 
 // The Routing page's history over HTTP (docs/08 M4): the gateway's own
-// trace of each routed request, the same history magpie's page plays —
-// one day of it, or every day when no day is named.
+// record of each routed request it kept on disk — one day gone by, named
+// by its day. The live trace is /api/gateway/trace's (gateway_trace.go).
 
 import (
 	"context"
@@ -31,8 +31,10 @@ type GatewayHistoryDoc struct {
 	Cut    bool           `json:"cut"`
 }
 
-// GatewayHistory reads the gateway's routing history. The empty day
-// reads every day, which is the cut Echo's Routing page draws.
+// GatewayHistory reads one named day of the gateway's routing history.
+// The instance answers the days it keeps beside the routes; the empty day
+// names none of them and answers no routes — the live trace is
+// /api/gateway/trace's, not this.
 func (c *Client) GatewayHistory(ctx context.Context, day string) (GatewayHistoryDoc, error) {
 	var out GatewayHistoryDoc
 	err := c.do(ctx, http.MethodGet, "/api/gateway/history?day="+day, nil, &out)

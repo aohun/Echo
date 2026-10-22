@@ -310,13 +310,13 @@ func fakeMagpie(t *testing.T) *httptest.Server {
 			`"deciders":[{"id":"jev/sonnet","name":"Jev","provider":"jev","providerName":"Jev","icon":"jev-color"}],` +
 			`"found":true}`))
 	})
-	mux.HandleFunc("GET /api/gateway/history", func(rw http.ResponseWriter, r *http.Request) {
-		if !guard(rw, r, "history") {
+	mux.HandleFunc("GET /api/gateway/trace", func(rw http.ResponseWriter, r *http.Request) {
+		if !guard(rw, r, "trace") {
 			return
 		}
 		rw.Header().Set("Content-Type", "application/json")
-		// oldest first, as the gateway's history file keeps them
-		rw.Write([]byte(`{"days":["2026-10-22"],"cut":false,"routes":[` +
+		// oldest first, as the gateway's in-memory trace keeps them
+		rw.Write([]byte(`{"seq":1,"mine":true,"now":"2026-10-22T08:00:01Z","totals":{"requests":2,"rerouted":0,"errors":1},"routes":[` +
 			`{"id":6,"time":"2026-10-22T07:00:00Z","agent":"claude","session":"s2","model":"anthropic/sonnet","provider":"claude","status":500,"error":"boom","done":false,"ms":5,"tries":[]},` +
 			`{"id":7,"time":"2026-10-22T08:00:00Z","agent":"codex","session":"s1","model":"openai/gpt-5","served":"gpt-5","provider":"openai","status":200,"done":true,"ms":120,"ttft":40,"tokens":100,"out":10,"reasoning":5,"sessionTitle":"修 bug","cost":0.01,"priced":true,"tries":[{"id":"openai","model":"gpt-5","status":200,"ms":120}]}]}`))
 	})

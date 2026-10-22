@@ -30,6 +30,10 @@ const (
 var (
 	remoteOnce   sync.Once
 	remoteClient *magpieclient.Client
+	// remoteGatewayURL is the gateway the instance said it serves
+	// (the probe's answer): what the pages draw where they drew the
+	// shell's own gateway address.
+	remoteGatewayURL string
 )
 
 // remoteGateway returns the magpie web client when the environment asks
@@ -44,12 +48,24 @@ func remoteGateway() *magpieclient.Client {
 		c := magpieclient.New(addr, key)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if _, err := c.Probe(ctx); err != nil {
+		info, err := c.Probe(ctx)
+		if err != nil {
 			return
 		}
+		remoteGatewayURL = info.Gateway
 		remoteClient = c
 	})
 	return remoteClient
+}
+
+// remoteGatewayServed is the address of the gateway the instance serves,
+// or "" when none answers: where the pages draw the hub they once drew
+// the shell's own gateway at.
+func remoteGatewayServed() string {
+	if remoteGateway() == nil {
+		return ""
+	}
+	return remoteGatewayURL
 }
 
 // readGatewayRemote builds what the Gateway page draws from a magpie web

@@ -3,6 +3,7 @@
 package shell
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"strconv"
@@ -338,7 +339,9 @@ func rtFlightDur(tr RoutingTraceRow) time.Duration {
 func (a *App) routingFlow(c *ui.Context, t *ui.Theme, rd RoutingData) {
 	now := time.Now()
 	m := rtFlowOf(rd, now)
-	m.Addr = settings.GatewayAddr()
+	// the hub names the gateway that serves: the shell's own when it is
+	// the one serving, the instance's when the seam reads one
+	m.Addr = cmp.Or(remoteGatewayServed(), settings.GatewayAddr())
 	m.Requests, m.Rerouted, m.Errors = rd.Totals.Requests, rd.Totals.Rerouted, rd.Totals.Errors
 	a.rtFlowKick()
 	_, replay := m.flights(rd.Traces, now)

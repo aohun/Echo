@@ -154,26 +154,24 @@ func readRoutingRemote(c *magpieclient.Client) (RoutingData, bool) {
 		})
 	}
 
-	// The routing history: the instance's gateway saw the traffic, and
-	// /api/gateway/history answers its trace of it — the same routes the
-	// embedded gateway.History("") would name, priced and titled by the
-	// instance.
-	hist, err := c.GatewayHistory(ctx, "")
+	// The routing trace: the instance's gateway saw the traffic, and
+	// /api/gateway/trace answers its in-memory routes and totals — the
+	// same read the embedded page makes of the gateway it serves
+	// (gw.Trace), priced and titled by the instance. The disk history
+	// (/api/gateway/history) is a day gone by and only answers by its
+	// day; the live page does not read it.
+	trace, err := c.GatewayTrace(ctx)
 	if err != nil {
 		return RoutingData{}, false
 	}
-	for _, r := range hist.Routes {
-		rd.Totals.Requests++
-		if len(r.Tries) > 1 {
-			rd.Totals.Rerouted++
-		}
-		if r.Error != "" || (r.Status >= 400 && r.Status != 0) {
-			rd.Totals.Errors++
-		}
+	rd.Totals = RoutingTotals{
+		Requests: trace.Totals.Requests,
+		Rerouted: trace.Totals.Rerouted,
+		Errors:   trace.Totals.Errors,
 	}
 	// Up to 60 most recent, newest first, as the embedded read keeps.
-	for i := len(hist.Routes) - 1; i >= 0 && len(rd.Traces) < 60; i-- {
-		r := hist.Routes[i].Route
+	for i := len(trace.Routes) - 1; i >= 0 && len(rd.Traces) < 60; i-- {
+		r := trace.Routes[i].Route
 		var cacheRead, cacheWrite int
 		for _, u := range r.Usage {
 			cacheRead += u.CacheRead
@@ -202,7 +200,7 @@ func readRoutingRemote(c *magpieclient.Client) (RoutingData, bool) {
 			Time:             r.Time,
 			Agent:            r.Agent,
 			Session:          r.Session,
-			SessionTitle:     hist.Routes[i].SessionTitle,
+			SessionTitle:     trace.Routes[i].SessionTitle,
 			RequestedModel:   r.Model,
 			ServedModel:      servedModel,
 			ProviderID:       r.Provider,
@@ -213,7 +211,7 @@ func readRoutingRemote(c *magpieclient.Client) (RoutingData, bool) {
 			Error:            r.Error,
 			Millis:           r.Millis,
 			TTFT:             r.TTFT,
-			Cost:             hist.Routes[i].Cost,
+			Cost:             trace.Routes[i].Cost,
 			Tokens:           r.Tokens,
 			OutputTokens:     r.Output,
 			ReasoningTokens:  r.Reasoning,
