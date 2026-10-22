@@ -182,6 +182,45 @@ gateway document's `version` is another magpie's, serving it — an
 instance serving its own gateway answers `running: true, mine: true`
 with no version at all.
 
+## Conclusion (2026-10-22)
+
+The question this branch was built to answer, answered with code:
+
+**A MyGo shell can run entirely against a separate `magpie web`, and it
+is not the better product.** Every Echo view's data need is reachable
+over HTTP (M0); a typed client, a process manager and a per-page seam
+carry the Gateway, Providers, Usage, Routing, Agents, Settings and
+Plugins pages, each keeping its embedded implementation as the fallback
+(M1–M4); the whole thing is contract-tested against a pinned magpie and
+measured (M5).
+
+What the experiment proved:
+
+- **The seam works and is cheap to build on.** The page dispatches at
+  one function; a page migrates in an afternoon; the domain types are
+  shared, so the decodes are direct — no re-drawing, no translation
+  layer of its own.
+- **Remote reads cost Echo's process nothing worth naming** — the same
+  binary peaks within 0.4 MB of itself either way.
+- **The cost is the second process.** The domain layer runs twice, and
+  peak memory lands at about 2× Plan A (183 MB vs 376 MB on the probe's
+  workload). Plan A's single process stays the floor.
+- **The drift risk is real but held.** `/api/*` is magpie's internal
+  frontend contract with no version promise; the contract test against
+  the pinned checkout is the counterweight, and the probe-gated version
+  check is the tripwire at connect time.
+
+What it would buy if adopted — upstream tracking (magpie upgrades carry
+everything; Echo's repo stops carrying domain code) — does not outweigh
+that cost **for as long as Plan A's per-commit ports keep working**, and
+they have (eleven upstream commits ported with their tests since the
+exception was granted). A fork can outgrow that: if the ports ever
+become the dominant maintenance cost, this branch is the ready escape —
+rebase it, move the pin, and the shell already speaks HTTP.
+
+So: **Plan A stays on `master`**; this branch is kept as the measured
+answer and the escape hatch, not merged.
+
 ## Red lines
 
 - This branch never modifies magpie's code, and never hosts magpie's page,
