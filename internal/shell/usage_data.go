@@ -237,6 +237,19 @@ func sessDaysOf(rangeID string) int {
 // heatmap, Sessions for the agents' session files, and Context for the
 // routing history's prompts. Nothing else is read, so switching segments
 // costs what that segment costs and no more.
+
+// usageReadBox is how long a usage read may take before the last good
+// data stands in, like the plugins read's box. A var so a test can
+// shorten it.
+var usageReadBox = 2 * time.Second
+
+// ReadUsageData reads what one segment of the Usage page draws.
+//
+// It is magpie's own read per segment: the Overview asks for the summary of
+// the period and the allowances, Requests for a page of the ledger and the
+// heatmap, Sessions for the agents' session files, and Context for the
+// routing history's prompts. Nothing else is read, so switching segments
+// costs what that segment costs and no more.
 func ReadUsageData(q UsageQuery) UsageData {
 	if q.Tab == "" {
 		q.Tab = UsTabOverview
@@ -254,12 +267,39 @@ func ReadUsageData(q UsageQuery) UsageData {
 		q.CtxDays = 7
 	}
 
+	// The instance's usage answers can wait on the network through its
+	// plugin host (an auth refresh against a vendor timed out under it
+	// for twelve seconds, and the reload paid every one): bound the read
+	// like the plugins read — the last good data stands in, and the read
+	// that finally lands is kept for the next pass.
+	done := make(chan UsageData, 1)
+	go func() { done <- readUsageInner(q) }()
+	select {
+	case got := <-done:
+		return got
+	case <-time.After(usageReadBox):
+		go func() {
+			if got := <-done; got.Quotas != nil || got.Ledger.Rows != nil || got.SessionsStats.Days != nil {
+				if cached, ok := loadDataCache(); ok {
+					cached.Usage = got
+					saveDataCache(cached)
+				}
+			}
+		}()
+		if cached, ok := loadDataCache(); ok {
+			got := cached.Usage
+			got.Query = q
+			return got
+		}
+		return UsageData{Query: q}
+	}
+}
+
+// readUsageInner is the read itself: the instance's answer when the seam
+// points at one, the embedded read otherwise.
+func readUsageInner(q UsageQuery) UsageData {
 	ud := UsageData{Query: q}
 
-	// The experiment's seam (docs/08 M4): a magpie web instance serves
-	// the overview and the ledger when the environment points at one;
-	// Sessions and Context stay local and any remote failure falls back
-	// to the embedded read below.
 	if c := remoteGateway(); c != nil {
 		if r, ok := readUsageRemote(c, q); ok {
 			return r
