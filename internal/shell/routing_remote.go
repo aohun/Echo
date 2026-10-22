@@ -12,15 +12,12 @@ package shell
 //   - Templates: the quick-setup templates are built-ins, no HTTP
 //     endpoint serves them and none is needed; the embedded read's list
 //     is the same either way.
-//   - Totals and Traces: the routing history. The traffic goes through
-//     the instance's gateway and Echo's embedded one saw none of it;
-//     docs/08 M4 keeps the history read local until the trace route
-//     (/api/gateway/trace) is mapped.
 //   - ClassifierErr: its source is the serving process's classifier
 //     failure record, which the document does not carry.
-//   - ProviderOff on a member: the document says only ready or not; a
-//     member whose provider is off reads not ready until that cut is
-//     mapped.
+//   - Session titles of non-codex agents in the history: the instance
+//     prices and titles the codex sessions it names; other agents'
+//     titles are this machine's session files, which the document does
+//     not carry.
 
 import (
 	"context"
@@ -32,12 +29,30 @@ import (
 	"github.com/yetone/magpie/internal/provider"
 )
 
+// provName is what the providers document says of one provider, for the
+// routes' and the members' rows: its name, its icon, whether it is off.
+type provName struct {
+	name string
+	icon string
+	off  bool
+}
+
 func readRoutingRemote(c *magpieclient.Client) (RoutingData, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	doc, err := c.Groups(ctx)
 	if err != nil {
 		return RoutingData{}, false
+	}
+	// The providers document rides along: the routes' and the members'
+	// rows name each provider, and a member's provider-off says so there.
+	pdoc, err := c.Providers(ctx)
+	if err != nil {
+		return RoutingData{}, false
+	}
+	names := make(map[string]provName, len(pdoc.Providers))
+	for _, p := range pdoc.Providers {
+		names[p.ID] = provName{name: p.Name, icon: p.Icon, off: p.Off}
 	}
 	rd := RoutingData{
 		AutoGroupsOn: doc.Found,
@@ -110,6 +125,17 @@ func readRoutingRemote(c *magpieclient.Client) (RoutingData, bool) {
 				mrow.Model = m.Model
 			} else {
 				mrow.Model = m.Of
+				// not ready and not resolved: often its provider is
+				// switched off, which the providers document says
+				if pid, model, ok := strings.Cut(m.Of, "/"); ok {
+					if n, found := names[pid]; found && n.off {
+						mrow.ProviderOff = true
+						mrow.ProviderID = pid
+						mrow.ProviderName = n.name
+						mrow.Icon = n.icon
+						mrow.Model = model
+					}
+				}
 			}
 			grow.Members = append(grow.Members, mrow)
 		}
@@ -125,6 +151,76 @@ func readRoutingRemote(c *magpieclient.Client) (RoutingData, bool) {
 			Routing:      p.Routing,
 			Affinity:     p.Affinity,
 			Sink:         p.Sink,
+		})
+	}
+
+	// The routing history: the instance's gateway saw the traffic, and
+	// /api/gateway/history answers its trace of it — the same routes the
+	// embedded gateway.History("") would name, priced and titled by the
+	// instance.
+	hist, err := c.GatewayHistory(ctx, "")
+	if err != nil {
+		return RoutingData{}, false
+	}
+	for _, r := range hist.Routes {
+		rd.Totals.Requests++
+		if len(r.Tries) > 1 {
+			rd.Totals.Rerouted++
+		}
+		if r.Error != "" || (r.Status >= 400 && r.Status != 0) {
+			rd.Totals.Errors++
+		}
+	}
+	// Up to 60 most recent, newest first, as the embedded read keeps.
+	for i := len(hist.Routes) - 1; i >= 0 && len(rd.Traces) < 60; i-- {
+		r := hist.Routes[i].Route
+		var cacheRead, cacheWrite int
+		for _, u := range r.Usage {
+			cacheRead += u.CacheRead
+			cacheWrite += u.CacheWrite
+		}
+		servedModel := r.Served
+		if servedModel == "" && len(r.Tries) > 0 {
+			servedModel = r.Tries[len(r.Tries)-1].Model
+		}
+		pName, pIcon := r.Provider, ""
+		if n, ok := names[r.Provider]; ok {
+			pName, pIcon = n.name, n.icon
+		}
+		var tries []RoutingTryRow
+		for _, tr := range r.Tries {
+			tries = append(tries, RoutingTryRow{
+				Who:      tr.ID,
+				Provider: tr.ID,
+				Model:    tr.Model,
+				Status:   tr.Status,
+				Millis:   tr.Millis,
+			})
+		}
+		rd.Traces = append(rd.Traces, RoutingTraceRow{
+			ID:               r.ID,
+			Time:             r.Time,
+			Agent:            r.Agent,
+			Session:          r.Session,
+			SessionTitle:     hist.Routes[i].SessionTitle,
+			RequestedModel:   r.Model,
+			ServedModel:      servedModel,
+			ProviderID:       r.Provider,
+			ProviderName:     pName,
+			ProviderIcon:     pIcon,
+			Status:           r.Status,
+			Done:             r.Done,
+			Error:            r.Error,
+			Millis:           r.Millis,
+			TTFT:             r.TTFT,
+			Cost:             hist.Routes[i].Cost,
+			Tokens:           r.Tokens,
+			OutputTokens:     r.Output,
+			ReasoningTokens:  r.Reasoning,
+			CacheReadTokens:  cacheRead,
+			CacheWriteTokens: cacheWrite,
+			Decision:         rtDecision(r),
+			Tries:            tries,
 		})
 	}
 	return rd, true

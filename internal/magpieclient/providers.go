@@ -11,11 +11,28 @@ import (
 	"net/http"
 
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/provider"
 )
+
+// GatewayGroup is a routing group as the Gateway view lists it: what a
+// request names, the providers it draws from, and what agents are told
+// of it as of a model.
+type GatewayGroup struct {
+	ID        string   `json:"id"` // group/<id>, what a request names
+	Name      string   `json:"name"`
+	Icons     []string `json:"icons"`     // its providers', one each
+	Providers []string `json:"providers"` // their names, in the group's order
+	Efforts   []string `json:"efforts,omitempty"`
+	Images    bool     `json:"images,omitempty"`
+	Context   int      `json:"context,omitempty"`
+	Output    int      `json:"output,omitempty"`
+	Members   []string `json:"members,omitempty"` // the models it sends to, provider/model, in its order
+}
 
 // GatewayStatus is the document's gateway part: the card the Gateway
 // page draws. Calls are the instance's recent calls, decoded as the
 // gateway's own type — the shell's conversion of one runs unchanged.
+// Groups are the catalog's routing groups, listed before the models.
 type GatewayStatus struct {
 	URL     string         `json:"url"`
 	LAN     bool           `json:"lan"`
@@ -28,6 +45,7 @@ type GatewayStatus struct {
 	Older   bool           `json:"older,omitempty"`
 	Models  int            `json:"models"`
 	Calls   []gateway.Call `json:"calls"`
+	Groups  []GatewayGroup `json:"groups"`
 }
 
 // ProviderAgents is one provider's using agents, as a row's tiles draw
@@ -50,11 +68,14 @@ type ProviderKey struct {
 }
 
 // ProviderAccount is the document's account part: the signed-in agent's
-// subscription facts, the same fields the embedded read cuts.
+// subscription facts, the same fields the embedded read cuts, and the
+// agent's remembered logins as the domain carries them — the row's
+// signed-out state is counted off them.
 type ProviderAccount struct {
-	Agent string `json:"agent"`
-	User  string `json:"user"`
-	Plan  string `json:"plan,omitempty"`
+	Agent  string          `json:"agent"`
+	User   string          `json:"user"`
+	Plan   string          `json:"plan,omitempty"`
+	Logins []provider.Login `json:"logins,omitempty"`
 }
 
 // ProviderSummary is one provider of the document as far as the gateway
@@ -67,8 +88,9 @@ type ProviderSummary struct {
 	Icon      string           `json:"icon"`
 	Preset    string           `json:"preset"`
 	Host      string           `json:"host"`
-	Off       bool             `json:"off,omitempty"`
-	Sponsored bool             `json:"sponsored,omitempty"`
+	Off       bool                `json:"off,omitempty"`
+	Sponsored bool                `json:"sponsored,omitempty"`
+	Unlisted  bool                `json:"unlisted,omitempty"`
 	Exposed   int                 `json:"exposed"`
 	Draws     int                 `json:"draws,omitempty"`
 	Models    []json.RawMessage   `json:"models"`

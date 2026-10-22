@@ -56,9 +56,27 @@ func TestRemoteGatewayChoosesWhenTheInstanceAnswers(t *testing.T) {
 	if call.Agent != "claude" || call.Model != "openai/gpt-5" || call.Status != 200 {
 		t.Errorf("call decoded as %+v", call)
 	}
-	// The entries list is the one cut still to map.
-	if g.Entries != nil {
-		t.Error("remote row guessed at the models list; that maps in a later milestone")
+	// The entries list: the routing group first, then the exposed
+	// models of the providers neither off nor unlisted.
+	if len(g.Entries) != 3 {
+		t.Fatalf("row entries %d", len(g.Entries))
+	}
+	grp := g.Entries[0]
+	if grp.ID != "group/fast" || grp.Name != "Fast" || !grp.Group ||
+		grp.Provider != "OpenAI" || grp.Icon != "openai-color" ||
+		grp.Context != 128000 || grp.Output != 8192 {
+		t.Errorf("group entry: %+v", grp)
+	}
+	first := g.Entries[1]
+	if first.ID != "openai/gpt-5" || first.Name != "GPT-5" || first.Group ||
+		first.Provider != "OpenAI" || first.Context != 128000 ||
+		!first.Images || !first.Free || len(first.Efforts) != 2 {
+		t.Errorf("model entry: %+v", first)
+	}
+	second := g.Entries[2]
+	// a model with no name of its own is named by its default
+	if second.ID != "openai/gpt-5-mini" || second.Name != "GPT-5 mini" {
+		t.Errorf("second model entry: %+v", second)
 	}
 }
 
@@ -70,7 +88,7 @@ func TestRemoteProvidersRows(t *testing.T) {
 	if !ok {
 		t.Fatal("readProvidersRemote failed against a live fake")
 	}
-	if len(rows) != 3 {
+	if len(rows) != 4 {
 		t.Fatalf("rows %d", len(rows))
 	}
 	keyed := rows[0]
@@ -87,13 +105,20 @@ func TestRemoteProvidersRows(t *testing.T) {
 	if !signed.SignedIn || signed.User != "w@example.com" || signed.Plan == "" {
 		t.Errorf("signed-in row: signed=%v user=%q plan=%q", signed.SignedIn, signed.User, signed.Plan)
 	}
+	if signed.Lapsed {
+		t.Error("signed-in row reads lapsed with a healthy login")
+	}
 	if signed.Key != "" || signed.NeedsKey {
 		t.Errorf("signed-in row carries a key: %q needs=%v", signed.Key, signed.NeedsKey)
 	}
 	if len(signed.Agents) != 1 || signed.Agents[0].Group != "" || signed.Agents[0].Model != "claude/sonnet" {
 		t.Errorf("signed-in row's agents: %+v", signed.Agents)
 	}
-	off := rows[2]
+	lapsed := rows[2]
+	if !lapsed.Lapsed || lapsed.User != "c@x.com" {
+		t.Errorf("lapsed row: lapsed=%v user=%q", lapsed.Lapsed, lapsed.User)
+	}
+	off := rows[3]
 	if !off.Off || off.Models != 4 {
 		t.Errorf("off row: off=%v models=%d", off.Off, off.Models)
 	}
@@ -152,8 +177,14 @@ func TestRemoteRoutingGroups(t *testing.T) {
 		t.Errorf("fast row's group member: %+v", g)
 	}
 	off := rd.Groups[1]
-	if !off.Disabled || len(off.Members) != 1 || off.Members[0].Ready || off.Members[0].Model != "deepseek/r2" {
+	if !off.Disabled || len(off.Members) != 1 || off.Members[0].Ready {
 		t.Errorf("quick row: %+v", off)
+	}
+	// its member's provider is off in the providers document: the row
+	// says so, as the embedded read does
+	qm := off.Members[0]
+	if !qm.ProviderOff || qm.ProviderName != "DeepSeek" || qm.Model != "r2" || qm.ProviderID != "deepseek" {
+		t.Errorf("quick row's member: %+v", qm)
 	}
 	if len(rd.AvailableModels) != 1 {
 		t.Fatalf("available models %d", len(rd.AvailableModels))
@@ -169,6 +200,27 @@ func TestRemoteRoutingGroups(t *testing.T) {
 	if len(rd.Pools) != 1 || rd.Pools[0].Kind != "account" || len(rd.Pools[0].Who) != 2 ||
 		rd.Pools[0].ProviderID != "openai" || !rd.Pools[0].Sink {
 		t.Errorf("pools: %+v", rd.Pools)
+	}
+	if rd.Totals.Requests != 2 || rd.Totals.Rerouted != 0 || rd.Totals.Errors != 1 {
+		t.Errorf("totals: %+v", rd.Totals)
+	}
+	if len(rd.Traces) != 2 {
+		t.Fatalf("traces %d", len(rd.Traces))
+	}
+	newest := rd.Traces[0]
+	if newest.ID != 7 || newest.Agent != "codex" || newest.SessionTitle != "修 bug" ||
+		newest.RequestedModel != "openai/gpt-5" || newest.ServedModel != "gpt-5" ||
+		newest.ProviderName != "OpenAI" || newest.Status != 200 || !newest.Done ||
+		newest.Millis != 120 || newest.TTFT != 40 || newest.Cost != 0.01 ||
+		newest.Tokens != 100 || newest.OutputTokens != 10 || newest.ReasoningTokens != 5 {
+		t.Errorf("newest trace: %+v", newest)
+	}
+	if len(newest.Tries) != 1 || newest.Tries[0].Who != "openai" || newest.Tries[0].Model != "gpt-5" {
+		t.Errorf("newest trace's tries: %+v", newest.Tries)
+	}
+	failed := rd.Traces[1]
+	if failed.ID != 6 || failed.ProviderName != "Claude" || failed.Status != 500 || failed.Error != "boom" {
+		t.Errorf("failed trace: %+v", failed)
 	}
 }
 
@@ -235,10 +287,11 @@ func fakeMagpie(t *testing.T) *httptest.Server {
 		}
 		rw.Header().Set("Content-Type", "application/json")
 		rw.Write([]byte(`{"providers":[` +
-			`{"id":"openai","name":"OpenAI","host":"api.openai.com","exposed":3,"draws":1,"key":{"set":true,"masked":"sk-…abc"},"ready":true,"agents":[{"id":"claude","name":"Claude Code","icon":"claudecode-color","current":true,"model":"openai/gpt-5"}],"models":[{},{},{}]},` +
-			`{"id":"claude","name":"Claude","preset":"claude","account":{"agent":"claude","user":"w@example.com","plan":"pro"},"ready":true,"agents":[{"id":"codex","name":"Codex","icon":"codex-color","current":true,"model":"claude/sonnet"}]},` +
+			`{"id":"openai","name":"OpenAI","host":"api.openai.com","exposed":3,"draws":1,"key":{"set":true,"masked":"sk-…abc"},"ready":true,"agents":[{"id":"claude","name":"Claude Code","icon":"claudecode-color","current":true,"model":"openai/gpt-5"}],"models":[{"id":"gpt-5","name":"GPT-5","on":true,"context":128000,"efforts":["low","high"],"images":true,"free":true},{"id":"gpt-5-mini","default":"GPT-5 mini","on":true,"context":400000},{"id":"hidden","on":false}]},` +
+			`{"id":"claude","name":"Claude","preset":"claude","account":{"agent":"claude","user":"w@example.com","plan":"pro","logins":[{"agent":"claude","user":"w@example.com","active":true,"on":true}]},"ready":true,"agents":[{"id":"codex","name":"Codex","icon":"codex-color","current":true,"model":"claude/sonnet"}]},` +
+			`{"id":"cursor","name":"Cursor","account":{"agent":"cursor","user":"c@x.com","plan":"team","logins":[{"agent":"cursor","user":"c@x.com","active":true,"on":true,"lapsed":"refresh refused"}]},"ready":true,"agents":[]},` +
 			`{"id":"deepseek","name":"DeepSeek","key":{"set":false,"masked":"","optional":false},"ready":false,"off":true,"agents":[],"models":[{},{},{},{}]}` +
-			`],"presets":[],"excluded":[],"gateway":{"url":"http://127.0.0.1:3497","running":true,"mine":false,"version":"v9.9.9","models":3,"calls":[{"time":"2026-10-22T08:00:00Z","agent":"claude","model":"openai/gpt-5","provider":"openai","from":"anthropic","to":"openai","status":200,"ms":120,"ttft":40}]}}`))
+			`],"presets":[],"excluded":[],"gateway":{"url":"http://127.0.0.1:3497","running":true,"mine":false,"version":"v9.9.9","models":3,"calls":[{"time":"2026-10-22T08:00:00Z","agent":"claude","model":"openai/gpt-5","provider":"openai","from":"anthropic","to":"openai","status":200,"ms":120,"ttft":40}],"groups":[{"id":"group/fast","name":"Fast","icons":["openai-color","claude-color"],"providers":["OpenAI","Claude"],"efforts":["low","high"],"context":128000,"output":8192,"members":["openai/gpt-5","claude/sonnet"]}]}}`))
 	})
 	mux.HandleFunc("GET /api/groups", func(rw http.ResponseWriter, r *http.Request) {
 		if !guard(rw, r, "groups") {
@@ -256,6 +309,16 @@ func fakeMagpie(t *testing.T) *httptest.Server {
 			`"pools":[{"provider":"openai","name":"OpenAI","icon":"openai-color","kind":"account","who":["a@x.com","b@x.com"],"routing":"rotate","affinity":"session","sink":true}],` +
 			`"deciders":[{"id":"jev/sonnet","name":"Jev","provider":"jev","providerName":"Jev","icon":"jev-color"}],` +
 			`"found":true}`))
+	})
+	mux.HandleFunc("GET /api/gateway/history", func(rw http.ResponseWriter, r *http.Request) {
+		if !guard(rw, r, "history") {
+			return
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		// oldest first, as the gateway's history file keeps them
+		rw.Write([]byte(`{"days":["2026-10-22"],"cut":false,"routes":[` +
+			`{"id":6,"time":"2026-10-22T07:00:00Z","agent":"claude","session":"s2","model":"anthropic/sonnet","provider":"claude","status":500,"error":"boom","done":false,"ms":5,"tries":[]},` +
+			`{"id":7,"time":"2026-10-22T08:00:00Z","agent":"codex","session":"s1","model":"openai/gpt-5","served":"gpt-5","provider":"openai","status":200,"done":true,"ms":120,"ttft":40,"tokens":100,"out":10,"reasoning":5,"sessionTitle":"修 bug","cost":0.01,"priced":true,"tries":[{"id":"openai","model":"gpt-5","status":200,"ms":120}]}]}`))
 	})
 	mux.HandleFunc("POST /api/groups/{action}", func(rw http.ResponseWriter, r *http.Request) {
 		if !guard(rw, r, "groups action") {

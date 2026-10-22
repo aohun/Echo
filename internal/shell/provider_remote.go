@@ -10,12 +10,11 @@ package shell
 // along undecoded in the client's Raw.
 
 // What stays embedded even in remote mode:
-//   - Lapsed: its source is the logins' refused states, which the
-//     document's account cut does not carry; a row shows not-lapsed
-//     until that cut is mapped.
 //   - the page's writes: a switch or a drag still acts on the embedded
-//     domain (provider.SetOff, provider.SetOrder). In remote mode they
-//     are disabled at the call sites, not sent to the wrong process.
+//     domain when the instance does not answer. In remote mode they are
+//     asked of the instance first (provider.go's SwitchProvider and
+//     ArrangeProvider), its answer adopted, and only a remote failure
+//     falls back to the embedded domain.
 
 import (
 	"context"
@@ -48,6 +47,19 @@ func readProvidersRemote(c *magpieclient.Client) ([]ProviderRow, bool) {
 			r.SignedIn = true
 			r.User = acct.User
 			r.Plan = accountPlan(acct.Agent, acct.Plan)
+			// every login in use refused by its vendor: signed out, the
+			// same count the embedded read makes — the document carries
+			// the agent's remembered logins as the domain holds them
+			inUse, lapsed := 0, 0
+			for _, l := range acct.Logins {
+				if l.On || l.Active {
+					inUse++
+					if l.Lapsed != "" {
+						lapsed++
+					}
+				}
+			}
+			r.Lapsed = inUse > 0 && lapsed == inUse
 		} else {
 			r.Key = p.Key.Masked
 			r.NeedsKey = !p.Ready

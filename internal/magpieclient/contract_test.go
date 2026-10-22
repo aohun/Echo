@@ -218,6 +218,14 @@ func TestContractAgainstThePinnedMagpie(t *testing.T) {
 		t.Errorf("/api/usage/quotas: %v", err)
 	}
 
+	// /api/gateway/history: the Routing page's history — the gateway's
+	// own routes, priced and titled by the instance.
+	if h, err := c.GatewayHistory(ctx, ""); err != nil {
+		t.Errorf("/api/gateway/history: %v", err)
+	} else if h.Cut {
+		t.Log("/api/gateway/history: the instance's history was cut")
+	}
+
 	// /api/set: with no agent named, the instance's error is the
 	// contract too — an APIError with a body, not a hung request.
 	var st State

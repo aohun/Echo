@@ -11,6 +11,7 @@ package shell
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"sync"
 	"time"
@@ -55,9 +56,8 @@ func remoteGateway() *magpieclient.Client {
 // instance's /api/providers: its gateway part carries the card in full —
 // URL, running, whose it is, the version, the model count — and the
 // recent calls as the gateway's own Call type, so the shell's conversion
-// of one runs unchanged. The entries list (the models with their icons
-// and the routing groups first) is the one cut still mapped in a later
-// milestone; a guessed ordering is worse than an empty list.
+// of one runs unchanged. The entries list is the document's own: the
+// routing groups it names whole, then each provider's exposed models.
 func readGatewayRemote(c *magpieclient.Client) (GatewayRow, bool) {
 	g := GatewayRow{}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -85,5 +85,73 @@ func readGatewayRemote(c *magpieclient.Client) (GatewayRow, bool) {
 		}
 	}
 	g.Routed = len(routed)
+	// Entries: the routing groups first, then every exposed model of
+	// every provider not kept unlisted or switched off — the cut the
+	// embedded read makes over provider.Catalog, rebuilt from the
+	// document's two halves: the groups it carries whole, and each
+	// provider row's models, exposed ones only.
+	entries := make([]GatewayModel, 0, gs.Models)
+	for _, grp := range gs.Groups {
+		m := GatewayModel{
+			ID:      grp.ID,
+			Name:    grp.Name,
+			Group:   true,
+			Context: grp.Context,
+			Output:  grp.Output,
+			Efforts: grp.Efforts,
+			Images:  grp.Images,
+		}
+		// a group's provider is its members' — the document names them
+		m.Provider = "routing group"
+		if len(grp.Providers) > 0 {
+			m.Provider = grp.Providers[0]
+		}
+		if len(grp.Icons) > 0 {
+			m.Icon = grp.Icons[0]
+		}
+		entries = append(entries, m)
+	}
+	for _, p := range doc.Providers {
+		if p.Off || p.Unlisted {
+			continue
+		}
+		for _, raw := range p.Models {
+			var mj struct {
+				ID      string   `json:"id"`
+				Name    string   `json:"name"`
+				Default string   `json:"default,omitempty"`
+				On      bool     `json:"on"`
+				Context int      `json:"context,omitempty"`
+				Output  int      `json:"output,omitempty"`
+				Efforts []string `json:"efforts"`
+				Images  bool     `json:"images"`
+				Free    bool     `json:"free,omitempty"`
+			}
+			if err := json.Unmarshal(raw, &mj); err != nil {
+				// a model cut that no longer decodes is a contract
+				// drift: the page falls back to the embedded read
+				return GatewayRow{}, false
+			}
+			if !mj.On {
+				continue
+			}
+			name := mj.Name
+			if name == "" {
+				name = mj.Default
+			}
+			entries = append(entries, GatewayModel{
+				ID:       p.ID + "/" + mj.ID,
+				Name:     name,
+				Provider: p.Name,
+				Icon:     p.Icon,
+				Context:  mj.Context,
+				Output:   mj.Output,
+				Efforts:  mj.Efforts,
+				Images:   mj.Images,
+				Free:     mj.Free,
+			})
+		}
+	}
+	g.Entries = entries
 	return g, true
 }
