@@ -52,26 +52,38 @@ func remoteGateway() *magpieclient.Client {
 }
 
 // readGatewayRemote builds what the Gateway page draws from a magpie web
-// instance: the status card in full — URL, running, whose it is, the
-// version — and the routing totals from the trace. The page's own model
-// list and its recent calls still come from the embedded reader: their
-// HTTP shapes (/api/groups's models, the trace's routes under traffic)
-// are mapped page by page in the milestones after this one.
+// instance's /api/providers: its gateway part carries the card in full —
+// URL, running, whose it is, the version, the model count — and the
+// recent calls as the gateway's own Call type, so the shell's conversion
+// of one runs unchanged. The entries list (the models with their icons
+// and the routing groups first) is the one cut still mapped in a later
+// milestone; a guessed ordering is worse than an empty list.
 func readGatewayRemote(c *magpieclient.Client) (GatewayRow, bool) {
 	g := GatewayRow{}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	info, err := c.Probe(ctx)
+	doc, err := c.Providers(ctx)
 	if err != nil {
 		return g, false
 	}
-	g.URL = info.Gateway
-	g.Running, g.Version = true, info.Version
-	// The instance serves the gateway; Echo does not.
-	g.Mine = false
-	// Models, Entries and Calls stay at their zero values: their sources
-	// (/api/groups's model list, the trace's routes under real traffic)
-	// are mapped page by page in the milestones after this one, and a
-	// guessed mapping is worse than an empty list.
+	gs := doc.Gateway
+	g.URL, g.Running, g.Mine = gs.URL, gs.Running, gs.Mine
+	g.Version, g.Older = gs.Version, gs.Running && gs.Older
+	g.Models = gs.Models
+	for _, call := range gs.Calls {
+		g.Calls = append(g.Calls, gatewayCall(call))
+	}
+	// Routed is the agents on a provider's model now, the same cut the
+	// page's own count makes: distinct agents, any provider's agent tile
+	// marked current.
+	routed := map[string]bool{}
+	for _, p := range doc.Providers {
+		for _, a := range p.Agents {
+			if a.Current {
+				routed[a.ID] = true
+			}
+		}
+	}
+	g.Routed = len(routed)
 	return g, true
 }
