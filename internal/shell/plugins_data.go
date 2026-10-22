@@ -380,6 +380,15 @@ func pluginBuiltins() (rows []BuiltinRow, broken string) {
 // magpie suggests, and what npm says of them — is asked separately, off the
 // page's first paint (plugins_market.go), because it downloads.
 func readPluginsData() PluginsData {
+	// The experiment's seam (docs/08 M4): the page's installed half from
+	// a magpie web instance when the environment points at one; the
+	// built-ins stay embedded either way (plugins_remote.go's header).
+	if c := remoteGateway(); c != nil {
+		if d, ok := readPluginsRemote(c); ok {
+			return d
+		}
+		// The instance went away; fall through to the embedded read.
+	}
 	builtins, broken := pluginBuiltins()
 	d := PluginsData{
 		Builtins: builtins,

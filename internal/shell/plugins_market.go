@@ -280,7 +280,7 @@ func (a *App) plugCheck() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		c := plugCheckUpdates(ctx)
+		c := plugCheckSeam(ctx)
 		run := func() {
 			a.plugChecking = false
 			a.plugChecks = &plugCheckResult{At: c.At, By: map[string]plugin.VersionCheck{}}
@@ -472,9 +472,10 @@ func (a *App) plugAdd(spec string) {
 		say = plugText(p.InstallDoneSignIn, "name", plugin.Name(spec))
 	}
 	a.plugManual = ""
-	a.plugRun("add:"+spec, true, say, func(ctx context.Context) error {
-		_, err := plugAddPlugin(ctx, spec)
-		return err
+	// handOver is the embedded write's: the instance's add runs its own
+	// (plugins_remote.go's header).
+	a.plugRun("add:"+spec, remoteGateway() == nil, say, func(ctx context.Context) error {
+		return plugAddSeam(ctx, spec)
 	})
 }
 
@@ -485,7 +486,7 @@ func (a *App) plugAdd(spec string) {
 func (a *App) plugRemove(spec string) {
 	p := &a.text.S.Plug
 	a.plugRunAsk("remove:"+spec, func(ctx context.Context) error {
-		return plugRemovePlugin(ctx, spec)
+		return plugRemoveSeam(ctx, spec)
 	}, func(err error) {
 		if err != nil {
 			a.plugNotice, a.plugNoticeErr = err.Error(), true
@@ -511,7 +512,7 @@ func (a *App) plugEntryFor(spec string) (PluginEntryRow, bool) {
 // the built-in a move onto it (magpie's move-again ask).
 func (a *App) plugSetOff(spec string, off bool) {
 	a.plugRunAsk("off:"+spec, func(ctx context.Context) error {
-		return plugSetPluginOff(ctx, spec, off)
+		return plugSetOffSeam(ctx, spec, off)
 	}, func(err error) {
 		if err != nil {
 			a.plugNotice, a.plugNoticeErr = err.Error(), true
@@ -538,16 +539,20 @@ func (a *App) plugUpgrade(spec, latest string) {
 	if v := strings.TrimPrefix(strings.TrimSpace(latest), "v"); v != "" {
 		say = plugText(p.UpdatedTo, "name", name, "v", v)
 	}
-	a.plugRun("upgrade:"+spec, true, say, func(ctx context.Context) error {
-		return plugUpgradePlugin(ctx, name)
+	// handOver is the embedded write's: the instance's upgrade runs its
+	// own (plugins_remote.go's header).
+	a.plugRun("upgrade:"+spec, remoteGateway() == nil, say, func(ctx context.Context) error {
+		return plugUpgradeSeam(ctx, name)
 	})
 }
 
 // plugUpdateAll updates every plugin with an update waiting, as magpie's
 // Update all does (plugin.Update).
 func (a *App) plugUpdateAll() {
-	a.plugRun("update", true, a.text.S.Plug.UpdatedAll, func(ctx context.Context) error {
-		return plugUpdatePlugins(ctx)
+	// handOver is the embedded write's: the instance's update runs its
+	// own (plugins_remote.go's header).
+	a.plugRun("update", remoteGateway() == nil, a.text.S.Plug.UpdatedAll, func(ctx context.Context) error {
+		return plugUpdateSeam(ctx)
 	})
 }
 
@@ -561,7 +566,7 @@ func (a *App) plugSaveOptions(spec string, opts map[string]any) {
 	}
 	a.plugOptions, a.plugOptsErr = "", ""
 	a.plugRun("options:"+spec, false, say, func(ctx context.Context) error {
-		return plugSetOptions(spec, opts)
+		return plugSetOptionsSeam(ctx, spec, opts)
 	})
 }
 
@@ -580,7 +585,7 @@ func (a *App) plugMove(id string) {
 	}
 	name := a.plugMoverName(id)
 	a.plugRunAsk("move:"+id, func(ctx context.Context) error {
-		return plugMoveProvider(ctx, id)
+		return plugMoveSeam(ctx, id)
 	}, func(err error) {
 		switch {
 		case err == nil:

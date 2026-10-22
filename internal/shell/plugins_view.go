@@ -195,7 +195,7 @@ func (a *App) plugMirror(c *ui.Context, t *ui.Theme) {
 	if row.Clicked() && !a.plugMirrorBusy {
 		a.plugMirrorBusy = true
 		go func() {
-			err := setChinaMirror(!on)
+			err := plugMirrorSeam(!on)
 			a.win.Update(func() {
 				a.plugMirrorBusy = false
 				if err != nil {
@@ -219,7 +219,7 @@ func (a *App) plugMirror(c *ui.Context, t *ui.Theme) {
 		if sw.Changed() && !a.plugMirrorBusy {
 			a.plugMirrorBusy = true
 			go func() {
-				err := setChinaMirror(v)
+				err := plugMirrorSeam(v)
 				a.win.Update(func() {
 					a.plugMirrorBusy = false
 					if err != nil {
