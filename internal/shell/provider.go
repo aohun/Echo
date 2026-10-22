@@ -4,10 +4,12 @@ package shell
 
 import (
 	"cmp"
+	"context"
 	"strings"
 
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/magpieclient"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -111,6 +113,14 @@ func agentUses(agents []*agent.Agent) []agentUse {
 // readProviders lists every configured provider as its row draws, in the
 // order they are tried — magpie's own order, on ones first.
 func readProviders() []ProviderRow {
+	// The experiment's seam (docs/08 M4): rows from a magpie web instance
+	// when the environment points at one; embedded otherwise.
+	if c := remoteGateway(); c != nil {
+		if rows, ok := readProvidersRemote(c); ok {
+			return rows
+		}
+		// The instance went away; fall through to the embedded read.
+	}
 	all := provider.All()
 	uses := agentUses(agent.Detected())
 	rows := make([]ProviderRow, 0, len(all))
@@ -250,7 +260,15 @@ func accountPlan(agentID, plan string) string {
 //
 // It is magpie's own switchProvider (provider.SetOff through agent.Reseat):
 // the agents on one of its models are moved to others, their files written.
+// The experiment's seam (docs/08 M4): when the environment points at a
+// magpie web instance the switch is asked of it, its answer adopted; any
+// remote failure falls back to the embedded switch below.
 func SwitchProvider(id string, on bool) error {
+	if c := remoteGateway(); c != nil {
+		if _, err := c.ProviderSwitch(context.Background(), id, !on); err == nil {
+			return nil
+		}
+	}
 	_, err := agent.Reseat(func() error { return provider.SetOff(id, !on) })
 	return err
 }
@@ -258,7 +276,22 @@ func SwitchProvider(id string, on bool) error {
 // ArrangeProvider puts the provider at index to among the ones on, the ones
 // switched off keeping their places among the rest — the same order
 // magpie's arrange endpoint saves (provider.SetOrder).
+//
+// The experiment's seam (docs/08 M4): when the environment points at a
+// magpie web instance the arrange is asked of it, the order computed over
+// its document; any remote failure falls back to the embedded arrange below.
 func ArrangeProvider(id string, to int) error {
+	if c := remoteGateway(); c != nil {
+		if doc, err := c.Providers(context.Background()); err == nil {
+			if order := arrangeOrder(doc, id, to); order != nil {
+				if _, err := c.ProvidersArrange(context.Background(), order); err == nil {
+					return nil
+				}
+			} else {
+				return nil // nothing to do, as magpie's own arrangeProvider says
+			}
+		}
+	}
 	all := provider.All()
 	var on []string
 	for _, p := range all {
@@ -293,4 +326,45 @@ func ArrangeProvider(id string, to int) error {
 		}
 	}
 	return provider.SetOrder(order)
+}
+
+// arrangeOrder is the seam's arrange: the order the document's ones on
+// name (not a guess from each provider's last place), the provider at
+// index to among the ones on, the ones switched off keeping their places
+// among the rest — nil when there is nothing to do, as magpie's own
+// arrangeProvider says.
+func arrangeOrder(doc magpieclient.ProvidersDoc, id string, to int) []string {
+	var on []string
+	for _, p := range doc.Providers {
+		if !p.Off {
+			on = append(on, p.ID)
+		}
+	}
+	from := -1
+	for i, x := range on {
+		if x == id {
+			from = i
+			break
+		}
+	}
+	if from < 0 || to < 0 || to >= len(on) || to == from {
+		return nil // nothing to do, as magpie's own arrangeProvider says
+	}
+	// the move itself: take it out, put it where it goes
+	out := make([]string, 0, len(on))
+	out = append(out, on[:from]...)
+	out = append(out, on[from+1:]...)
+	out = append(out[:to], append([]string{id}, out[to:]...)...)
+	// the order names every provider: the ones off keep their places
+	order := make([]string, 0, len(doc.Providers))
+	k := 0
+	for _, p := range doc.Providers {
+		if p.Off {
+			order = append(order, p.ID)
+		} else {
+			order = append(order, out[k])
+			k++
+		}
+	}
+	return order
 }

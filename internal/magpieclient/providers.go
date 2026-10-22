@@ -41,15 +41,41 @@ type ProviderAgents struct {
 	Group   string `json:"group,omitempty"`
 }
 
+// ProviderKey is the document's key part: whether one is saved, the
+// masked form the row shows, and whether the vendor needs one at all.
+type ProviderKey struct {
+	Set      bool   `json:"set"`
+	Masked   string `json:"masked"`
+	Optional bool   `json:"optional"`
+}
+
+// ProviderAccount is the document's account part: the signed-in agent's
+// subscription facts, the same fields the embedded read cuts.
+type ProviderAccount struct {
+	Agent string `json:"agent"`
+	User  string `json:"user"`
+	Plan  string `json:"plan,omitempty"`
+}
+
 // ProviderSummary is one provider of the document as far as the gateway
-// card and the providers page's first cut read it: who it is, whether it
-// is on, and the agents on it now.
+// card and the providers page's row cut read it: who it is, what it
+// serves, whether it can be used, and the agents on it now. The editor's
+// rest of the document stays untyped in Raw.
 type ProviderSummary struct {
-	ID     string           `json:"id"`
-	Name   string           `json:"name"`
-	Icon   string           `json:"icon"`
-	Off    bool             `json:"off,omitempty"`
-	Agents []ProviderAgents `json:"agents"`
+	ID        string           `json:"id"`
+	Name      string           `json:"name"`
+	Icon      string           `json:"icon"`
+	Preset    string           `json:"preset"`
+	Host      string           `json:"host"`
+	Off       bool             `json:"off,omitempty"`
+	Sponsored bool             `json:"sponsored,omitempty"`
+	Exposed   int                 `json:"exposed"`
+	Draws     int                 `json:"draws,omitempty"`
+	Models    []json.RawMessage   `json:"models"`
+	Key       ProviderKey         `json:"key"`
+	Ready     bool                `json:"ready"`
+	Agents    []ProviderAgents    `json:"agents"`
+	Account   *ProviderAccount    `json:"account,omitempty"`
 	// Raw keeps the editor's rest of the document for the page that
 	// needs it, undecoded.
 	Raw map[string]any `json:"-"`
