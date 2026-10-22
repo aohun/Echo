@@ -94,12 +94,12 @@ func UserPathQuick() {
 	}()
 }
 
-// UserPathWait waits for the answer UserPathQuick asked for, until the
-// deadline the ask set (shellWait from its start), then goes on with what
-// has arrived: a wait after the answer came returns at once, and the ask
-// is made here if it wasn't yet.
+// UserPathWait waits for the ask that is running, until the deadline it
+// set (shellWait from its start), then goes on with what has arrived. An
+// ask that already came back is not waited for and not asked again: its
+// answer is in the environment and the login already, and a fresh ask is
+// for the next UserPath to make.
 func UserPathWait() {
-	UserPathQuick()
 	userPathMu.Lock()
 	ask := userPathCur
 	userPathMu.Unlock()

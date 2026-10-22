@@ -374,6 +374,15 @@ func readDataAll(problems []library.Problem, glance bool) Data {
 	// rows — so the first paint lands when the fastest of the reads does.
 	pluginsCh := make(chan PluginsData, 1)
 	go func() { pluginsCh <- readPluginsData() }()
+	// the usage read is the other one that can wait seconds for its
+	// answer (its quotas and ledger come through the instance's plugin
+	// host, whose vendors time out on this machine's network): read it
+	// beside the others too. The glance does not wait for it either — the
+	// last good usage stands in, and the full read behind the glance
+	// brings the fresh rows.
+	usageCh := make(chan UsageData, 1)
+	usageT0 := time.Now()
+	go func() { usageCh <- ReadUsageData(UsageQuery{Tab: UsTabOverview, Period: usage.Month, Limit: 50, SessRange: "30d", CtxDays: 7}) }()
 	t0 := time.Now()
 	agents, installs, profiles := readAgentPageData()
 	slowRead("agents", t0)
@@ -389,9 +398,6 @@ func readDataAll(problems []library.Problem, glance bool) Data {
 	t0 = time.Now()
 	routing := readRoutingData()
 	slowRead("routing", t0)
-	t0 = time.Now()
-	usageData := ReadUsageData(UsageQuery{Tab: UsTabOverview, Period: usage.Month, Limit: 50, SessRange: "30d", CtxDays: 7})
-	slowRead("usage", t0)
 	t0 = time.Now()
 	settingsRow := readSettings()
 	slowRead("settings", t0)
@@ -418,6 +424,21 @@ func readDataAll(problems []library.Problem, glance bool) Data {
 		}
 	} else {
 		pluginsRow = <-pluginsCh
+	}
+	var usageData UsageData
+	if glance {
+		// as with the plugins, the glance does not wait: the last good
+		// usage stands in, and the full read behind it fills the page
+		select {
+		case usageData = <-usageCh:
+		default:
+			if cached, ok := loadDataCache(); ok {
+				usageData = cached.Usage
+			}
+		}
+	} else {
+		usageData = <-usageCh
+		slowRead("usage", usageT0)
 	}
 	d := Data{
 		Agents:        agents,
