@@ -18,6 +18,11 @@ package shell
 // only when the write stays here).
 //
 // What stays embedded even in remote mode:
+//   - A plugins read that outlasts its 3-second box (the document asks
+//     the instance's plugin host, whose answers can wait on the
+//     network): the page draws the embedded cut at once for a minute
+//     and tries the instance again after — the shared reload must not
+//     pay an instance's slow host every pass.
 //   - Built-ins: the Built-in tab is Echo's own runtime
 //     (internal/pluginrt) — this process's parts of the shell; no
 //     magpie endpoint serves them, so their cut keeps the embedded read
@@ -42,6 +47,8 @@ package shell
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/magpieclient"
@@ -70,8 +77,31 @@ type pluginEntryRemote struct {
 	MiddlewareOnly bool           `json:"middlewareOnly"`
 }
 
+// pluginsRemoteBox is how long the shared reload waits for the
+// instance's plugins document. The document asks the instance's plugin
+// host, whose answers can wait on the network (an auth refresh against a
+// vendor, a newer Bun looked up on GitHub) — magpie gives it a minute,
+// which the page's whole-data reload cannot pay for every pass. A var so
+// a test can shorten it.
+var pluginsRemoteBox = 3 * time.Second
+
+// pluginsRemoteGate keeps a plugins read that outlasted its box from
+// re-blocking every reload: for a minute after one, the page draws the
+// embedded cut at once — the same on-disk registry, without the host's
+// answers — and tries the instance again after.
+var pluginsRemoteGate struct {
+	sync.Mutex
+	until time.Time
+}
+
 func readPluginsRemote(c *magpieclient.Client) (PluginsData, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	pluginsRemoteGate.Lock()
+	blocked := time.Now().Before(pluginsRemoteGate.until)
+	pluginsRemoteGate.Unlock()
+	if blocked {
+		return PluginsData{}, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pluginsRemoteBox)
 	defer cancel()
 	var doc struct {
 		Plugins []pluginEntryRemote      `json:"plugins"`
@@ -82,10 +112,12 @@ func readPluginsRemote(c *magpieclient.Client) (PluginsData, bool) {
 		Mirror  bool                     `json:"mirror"`
 	}
 	if err := c.Do(ctx, "GET", "/api/plugins", nil, &doc); err != nil {
+		pluginsRemoteTimedOut(ctx, err)
 		return PluginsData{}, false
 	}
 	var upd plugin.Updates
 	if err := c.Do(ctx, "GET", "/api/plugins/updates", nil, &upd); err != nil {
+		pluginsRemoteTimedOut(ctx, err)
 		return PluginsData{}, false
 	}
 	d := PluginsData{
@@ -131,6 +163,16 @@ func readPluginsRemote(c *magpieclient.Client) (PluginsData, bool) {
 	d.Builtins, d.Broken = builtins, broken
 	d.On, d.OffPages = pluginsBuiltinCut(builtins)
 	return d, true
+}
+
+// pluginsRemoteTimedOut notes a plugins read that used its whole box, so
+// the next reload draws the embedded cut at once for a minute.
+func pluginsRemoteTimedOut(ctx context.Context, err error) {
+	if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		pluginsRemoteGate.Lock()
+		pluginsRemoteGate.until = time.Now().Add(time.Minute)
+		pluginsRemoteGate.Unlock()
+	}
 }
 
 // pluginsBuiltinCut is the built-ins cut the navigation reads: which are

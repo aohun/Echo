@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -241,5 +242,43 @@ func TestReadPluginsDataFallsBackWhenRemoteFails(t *testing.T) {
 	}
 	if d.On == nil || d.OffPages == nil {
 		t.Error("the embedded read left the navigation's maps nil")
+	}
+}
+
+// An instance whose plugins document outlasts the box (its plugin host
+// is waiting on the network) is drawn embedded at once, and stays so for
+// a minute: the reload after the first stall must not pay the wait
+// again. The box is shortened here so the test does not sleep.
+func TestPluginsRemoteGateAfterALateDocument(t *testing.T) {
+	oldBox := pluginsRemoteBox
+	pluginsRemoteBox = 50 * time.Millisecond
+	oldGate := pluginsRemoteGate.until
+	t.Cleanup(func() {
+		pluginsRemoteBox = oldBox
+		pluginsRemoteGate.until = oldGate
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		rw.Header().Set("Content-Type", "application/json")
+		rw.Write([]byte(`{"plugins":[],"movable":[],"mirror":false}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := withRemote(t, srv.URL)
+	if _, ok := readPluginsRemote(c); ok {
+		t.Fatal("a document after the box answered as if in time")
+	}
+	pluginsRemoteGate.Lock()
+	gated := time.Now().Before(pluginsRemoteGate.until)
+	pluginsRemoteGate.Unlock()
+	if !gated {
+		t.Error("a late document did not close the gate")
+	}
+	start := time.Now()
+	if _, ok := readPluginsRemote(c); ok {
+		t.Fatal("the gated read answered remote")
+	}
+	if d := time.Since(start); d > 50*time.Millisecond {
+		t.Errorf("the gated read took %v; it must return at once", d)
 	}
 }
