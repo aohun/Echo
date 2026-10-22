@@ -2,6 +2,7 @@ package gui
 
 import (
 	"encoding/json"
+	"io/fs"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,7 +11,7 @@ import (
 )
 
 func TestPurposeAssetMatchesUsage(t *testing.T) {
-	b, err := assets.ReadFile("assets/purposes.js")
+	b, err := fs.ReadFile(staticFS(), "purposes.js")
 	if err != nil {
 		t.Fatal(err)
 	}

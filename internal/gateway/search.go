@@ -429,6 +429,23 @@ func smallModel(p provider.Provider, keep func(catalog.Model) bool) string {
 // recognition kept describing with an account out of its allowance, each
 // image refused 429).
 func smallReady(p provider.Provider, keep func(catalog.Model) bool, from provider.Protocol) (string, bool) {
+	ms := smallCandidates(p, keep)
+	now := time.Now()
+	ready := slices.DeleteFunc(slices.Clone(ms), func(m catalog.Model) bool {
+		_, spent := spentModel(p, m.ID, from, now)
+		return spent
+	})
+	if id := pickSmall(ready); id != "" {
+		return id, true
+	}
+	return pickSmall(ms), false
+}
+
+// smallCandidates are the models of p that could be picked as its small
+// one: those that keep holds, and those that are not a group, one of a
+// subscription's own list, or a model magpie writes into an agent
+// (whose id says what it is: an image, a voice, an embedding).
+func smallCandidates(p provider.Provider, keep func(catalog.Model) bool) []catalog.Model {
 	var ms []catalog.Model
 	for _, m := range p.Exposed() {
 		if keep != nil && !keep(m) {
@@ -442,15 +459,7 @@ func smallReady(p provider.Provider, keep func(catalog.Model) bool, from provide
 		}
 		ms = append(ms, m)
 	}
-	now := time.Now()
-	ready := slices.DeleteFunc(slices.Clone(ms), func(m catalog.Model) bool {
-		_, spent := spentModel(p, m.ID, from, now)
-		return spent
-	})
-	if id := pickSmall(ready); id != "" {
-		return id, true
-	}
-	return pickSmall(ms), false
+	return ms
 }
 
 // pickSmall is smallModel's pick of ms.

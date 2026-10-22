@@ -16,6 +16,8 @@
 # the shell binary `make echo` writes, and mygo build output
 /echo
 /build-echo/
+# the page `magpie web` serves, staged into resources/ by `make echo-app`
+/resources/
 *.test
 *.out
 

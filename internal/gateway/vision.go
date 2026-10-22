@@ -28,9 +28,52 @@ import (
 // describes them to it.
 func init() {
 	provider.Described = func() bool {
-		_, ok := seer()
-		return ok
+		return describable()
 	}
+}
+
+// describable is whether a model that sees is there to describe an image
+// to: the Settings' Vision while it resolves, else one of the models the
+// user enabled that sees.
+//
+// It is what provider.Described asks, and it is a question about the
+// models alone: whether one of them is out of its allowance is what
+// decides which one describes an image (autoVision), not whether any
+// can. It used to be seer(), which picked that model and so read every
+// account's allowance — a network read for an answer that does not
+// depend on it, waited for once per account, which held magpie's
+// start-up for four seconds (the window was up in 280ms of it).
+func describable() bool {
+	switch v := provider.HeldSettings().Vision; v {
+	case "off":
+		return false
+	case "":
+	default:
+		if pickedMissing(v) == "" {
+			return true
+		}
+	}
+	return anySees()
+}
+
+// anySees is whether one of the models the user enabled sees images, of
+// the providers that take requests. It asks no account's allowance.
+//
+// The models are the ones a describer could be picked from (smallReady's
+// candidates), so a model magpie would not describe with is not counted
+// as one that sees.
+func anySees() bool {
+	for _, p := range provider.All() {
+		if !p.On() || p.DecideOnly() {
+			continue
+		}
+		for _, m := range smallCandidates(p, sees) {
+			if sees(m) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // VisionAgent is the User-Agent of the descriptions magpie asks for.

@@ -57,7 +57,16 @@ echo:
 # hands -upload to mygo, which puts the bundle, the archives and the
 # manifests on a draft release of that repository; publishing the draft
 # is what makes the check find it.
+#
+# The page `magpie web` serves is not in the binary: the shell draws its
+# own windows, and the page is six megabytes of HTML, CSS and JavaScript
+# it would only carry (internal/gui/assets_nogui.go). It is staged into
+# resources/, which mygo build copies into the bundle, so browser mode
+# still works. The staged copy is not in the repository: the page is
+# magpie's, and it is copied from where the fork keeps it.
 echo-app:
+	@mkdir -p resources/web-assets
+	@cp -R internal/gui/assets/. resources/web-assets/
 	GOFLAGS="-tags=nogui,echo" MYGO_UPDATER_PRIVATE_KEY="$$(cat "$$HOME/Library/Application Support/mygo/update-keys/mygo-update.key")" go tool mygo build $(if $(UPLOAD),-upload)
 
 # echo-app-bundled is echo-app with the magpie web helper inside the bundle,
