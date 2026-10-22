@@ -633,6 +633,11 @@ func (a *App) agentsLead(c *ui.Context, t *ui.Theme) {
 func (a *App) agentsCard(c *ui.Context, t *ui.Theme) {
 	var detected []AgentRow
 	for _, ag := range a.data.Agents {
+		// the wire switch a click just asked for shows at once; the
+		// write and the reload that confirm it follow behind
+		if h, ok := a.agWireHint[ag.ID]; ok {
+			ag.Wired = h
+		}
 		if ag.Found {
 			detected = append(detected, ag)
 		}
@@ -860,10 +865,25 @@ func (a *App) agentRow(c *ui.Context, t *ui.Theme, ag AgentRow, index, total int
 			on := ag.Wired
 			if sw := ui.Switch(c, &on).Shrink(0); sw.Clicked() {
 				agID := ag.ID
+				// the row says what it was asked for at once: the write
+				// and the whole-bundle reload behind it take seconds on
+				// a magpie web instance, and the switch must not wait
+				if a.agWireHint == nil {
+					a.agWireHint = map[string]bool{}
+				}
+				a.agWireHint[agID] = on
+				a.invalidate()
 				go func(targetOn bool) {
-					if err := agentConnect(agID, targetOn); err == nil {
-						a.Reload()
+					// the reload that follows lands either way: a
+					// failure reverts the row to the true state, a
+					// success confirms the flip
+					_ = agentConnect(agID, targetOn)
+					if a.win != nil {
+						a.win.Update(func() {
+							delete(a.agWireHint, agID)
+						})
 					}
+					a.Reload()
 				}(on)
 			}
 		})

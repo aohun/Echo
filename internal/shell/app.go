@@ -191,6 +191,10 @@ type App struct {
 	agModalGroup    string          // selected group in left rail ("" = all)
 	agModalFolded   map[string]bool // which groups are collapsed in right list
 	agModalOnly     bool            // whether "only picked models" switch is active
+	// agWireHint holds the wire state an agent's switch was just asked
+	// for, until the reload that confirms it lands: the row flips at
+	// once, the write and the re-read follow behind it.
+	agWireHint map[string]bool
 
 	// The Library page's own state:
 	libTab          LibTab
@@ -759,6 +763,9 @@ func (a *App) Reload() {
 			return
 		}
 		a.win.Update(func() {
+			// the authoritative read has landed: what the switches were
+			// asked for is now either confirmed or corrected by the data
+			a.agWireHint = nil
 			a.data, a.loading, a.err = glance, false, nil
 		})
 		a.loadCLIsAsync()
