@@ -4,12 +4,17 @@ package shell
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/library"
+	"github.com/yetone/magpie/internal/plugin"
+	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
 )
 
@@ -319,25 +324,112 @@ func readLibraryData(problems []library.Problem, glance bool) LibraryData {
 // magpie's own detection does — so pointing it at a test home is enough to keep
 // it off the reader's real setup (the rule magpie's tests follow; see
 // docs/06-open-questions-and-risks.md, risk O12).
+// slowRead logs a page read that outlasted its share of the reload: what
+// a slow pass paid can be read rather than felt.
+func slowRead(what string, since time.Time) {
+	if d := time.Since(since); d > 300*time.Millisecond {
+		log.Printf("echo: slow read: %-10s %dms", what, d.Milliseconds())
+	}
+}
+
+// readDataBox is how long a read of the whole bundle may take before the
+// last good data stands in: the instance's answers can wait on the
+// network through its plugin host (an auth refresh against a vendor, a
+// newer Bun looked up on GitHub), and the reload cannot pay that every
+// pass. A var so a test can shorten it.
+var readDataBox = 2 * time.Second
+
+// readData reads the bundle behind a watchdog: past the box, the last
+// good data stands in at once and the read that finally lands is kept
+// for the next pass. Inside, the plugins read runs beside the others —
+// it is the one that can wait seconds for its document, so it must not
+// stand in front of them either.
 func readData(problems []library.Problem, glance bool) Data {
+	done := make(chan Data, 1)
+	go func() { done <- readDataAll(problems, glance) }()
+	select {
+	case d := <-done:
+		return d
+	case <-time.After(readDataBox):
+		go func() {
+			// keep the read going: when it finally lands, it becomes
+			// the last good data for the next pass
+			if d := <-done; d.Plugins.Installed != nil || d.Agents != nil {
+				saveDataCache(d)
+			}
+		}()
+		if cached, ok := loadDataCache(); ok {
+			return cached
+		}
+		return Data{}
+	}
+}
+
+func readDataAll(problems []library.Problem, glance bool) Data {
 	// The plugins read is the one that can wait seconds for its document
 	// (its own box on a magpie web instance, whose plugin host can wait
 	// on the network): read it beside the others rather than in front of
-	// them, so the glance lands when the fastest of the reads does.
-	plugins := make(chan PluginsData, 1)
-	go func() { plugins <- readPluginsData() }()
+	// them. The glance does not even wait for it — the last good cut
+	// stands in, and the full read behind the glance brings the fresh
+	// rows — so the first paint lands when the fastest of the reads does.
+	pluginsCh := make(chan PluginsData, 1)
+	go func() { pluginsCh <- readPluginsData() }()
+	t0 := time.Now()
 	agents, installs, profiles := readAgentPageData()
+	slowRead("agents", t0)
+	t0 = time.Now()
+	providers := readProviders()
+	slowRead("providers", t0)
+	t0 = time.Now()
+	gatewayRow := readGateway()
+	slowRead("gateway", t0)
+	t0 = time.Now()
+	library := readLibraryData(problems, glance)
+	slowRead("library", t0)
+	t0 = time.Now()
+	routing := readRoutingData()
+	slowRead("routing", t0)
+	t0 = time.Now()
+	usageData := ReadUsageData(UsageQuery{Tab: UsTabOverview, Period: usage.Month, Limit: 50, SessRange: "30d", CtxDays: 7})
+	slowRead("usage", t0)
+	t0 = time.Now()
+	settingsRow := readSettings()
+	slowRead("settings", t0)
+	t0 = time.Now()
+	var pluginsRow PluginsData
+	if glance {
+		// the glance does not wait: the last good cut stands in, and the
+		// full read behind it brings the fresh rows
+		select {
+		case pluginsRow = <-pluginsCh:
+		default:
+			if cached, ok := loadDataCache(); ok {
+				pluginsRow = cached.Plugins
+			} else {
+				pluginsRow = PluginsData{
+					Bun:      plugin.HasBun(),
+					BunVer:   plugin.BunInUse(),
+					Mirror:   settings.Load().ChinaMirror,
+					On:       map[string]bool{},
+					Movable:  []provider.MoveCandidate{},
+					OffPages: map[string]bool{},
+				}
+			}
+		}
+	} else {
+		pluginsRow = <-pluginsCh
+	}
 	d := Data{
 		Agents:        agents,
 		AgentInstalls: installs,
 		AgentProfiles: profiles,
-		Providers:     readProviders(),
-		Gateway:       readGateway(),
-		Plugins:       <-plugins,
-		Library:       readLibraryData(problems, glance),
-		Routing:       readRoutingData(),
-		Usage:         ReadUsageData(UsageQuery{Tab: UsTabOverview, Period: usage.Month, Limit: 50, SessRange: "30d", CtxDays: 7}),
-		Settings:      readSettings(),
+		Providers:     providers,
+		Gateway:       gatewayRow,
+		Plugins:       pluginsRow,
+		Library:       library,
+		Routing:       routing,
+		Usage:         usageData,
+		Settings:      settingsRow,
 	}
 	saveDataCache(d)
 	return d
