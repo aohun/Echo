@@ -1664,12 +1664,9 @@ func (a *App) rtSaveGroup() {
 
 	var err error
 	if !m.IsNew && m.OriginalID != "" && m.OriginalID != m.ID {
-		g.ID = m.OriginalID
-		if err = provider.SaveGroup(g); err == nil {
-			err = provider.RenameGroup(m.OriginalID, m.ID)
-		}
+		err = routingSaveGroup(g, m.OriginalID)
 	} else {
-		err = provider.SaveGroup(g)
+		err = routingSaveGroup(g, "")
 	}
 
 	if err != nil {

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -131,7 +130,7 @@ func (a *App) routingHeader(c *ui.Context, t *ui.Theme, rd RoutingData) {
 				autoBtn.Background(a.fieldBg(t)).Border(1, t.Border)
 			}
 			if autoBtn.Clicked() {
-				_, _ = agent.Reseat(func() error { return provider.SetAutoGroups(!rd.AutoGroupsOn) })
+				_ = routingFound(!rd.AutoGroupsOn)
 				a.Reload()
 			}
 			autoBtn.Children(func() {
@@ -250,7 +249,7 @@ func (a *App) routingGroupCard(c *ui.Context, t *ui.Theme, g RoutingGroupRow, id
 				sw.Background(ui.Hex("#8e8e93"))
 			}
 			if sw.Clicked() {
-				_ = provider.SwitchGroup(g.ID, g.Disabled)
+				_ = routingSwitch(g.ID, g.Disabled)
 				a.Reload()
 			}
 			sw.Children(func() {
@@ -368,7 +367,7 @@ func (a *App) routingGroupCard(c *ui.Context, t *ui.Theme, g RoutingGroupRow, id
 				}
 				if delBtn.Clicked() {
 					if isDeleting {
-						_ = provider.DeleteGroup(g.ID)
+						_ = routingDelete(g.ID)
 						a.rtDeleteGroup = ""
 						a.setRoutingNotice("已删除分组："+g.Name, false)
 						a.Reload()

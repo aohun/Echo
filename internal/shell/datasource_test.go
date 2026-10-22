@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/yetone/magpie/internal/magpieclient"
+	"github.com/yetone/magpie/internal/provider"
 )
 
 func TestRemoteGatewayOffByDefault(t *testing.T) {
@@ -118,6 +119,99 @@ func TestRemoteGatewayFallsBackWhenTheInstanceIsGone(t *testing.T) {
 	_ = readGateway()
 }
 
+func TestRemoteRoutingGroups(t *testing.T) {
+	srv := fakeMagpie(t)
+	withRemote(t, srv.URL)
+	rd := readRoutingData()
+	if !rd.AutoGroupsOn {
+		t.Error("auto groups: the document says found, the read says off")
+	}
+	if len(rd.Templates) == 0 {
+		t.Error("templates stay embedded; the remote read dropped them")
+	}
+	if len(rd.Groups) != 2 {
+		t.Fatalf("groups %d", len(rd.Groups))
+	}
+	fast := rd.Groups[0]
+	if fast.ID != "fast" || fast.Routing != "manual" || !fast.Ready || fast.Pick != "openai/gpt-5:high" {
+		t.Errorf("fast row: %+v", fast)
+	}
+	if len(fast.Weights) != 1 || fast.Weights["openai/gpt-5:high"] != 3 {
+		t.Errorf("fast row's weights: %v", fast.Weights)
+	}
+	if len(fast.Members) != 2 {
+		t.Fatalf("fast row's members %d", len(fast.Members))
+	}
+	m := fast.Members[0]
+	if m.Model != "gpt-5" || m.Effort != "high" || m.ProviderName != "OpenAI" || m.AccountsOn != 2 ||
+		!m.Ready || !m.CanFast || m.Context != 128000 || m.Weight != 3 || m.IsGroup {
+		t.Errorf("fast row's model member: %+v", m)
+	}
+	g := fast.Members[1]
+	if !g.IsGroup || g.Model != "quick" || g.ProviderName != "Quick" || g.AccountsOn != 1 || !g.Ready {
+		t.Errorf("fast row's group member: %+v", g)
+	}
+	off := rd.Groups[1]
+	if !off.Disabled || len(off.Members) != 1 || off.Members[0].Ready || off.Members[0].Model != "deepseek/r2" {
+		t.Errorf("quick row: %+v", off)
+	}
+	if len(rd.AvailableModels) != 1 {
+		t.Fatalf("available models %d", len(rd.AvailableModels))
+	}
+	am := rd.AvailableModels[0]
+	if am.ID != "openai/gpt-5" || am.ProviderID != "openai" || am.ProviderName != "OpenAI" ||
+		!am.CanFast || !am.Images || am.Context != 128000 {
+		t.Errorf("available model: %+v", am)
+	}
+	if len(rd.DeciderModels) != 1 || rd.DeciderModels[0].ID != "jev/sonnet" {
+		t.Errorf("decider models: %+v", rd.DeciderModels)
+	}
+	if len(rd.Pools) != 1 || rd.Pools[0].Kind != "account" || len(rd.Pools[0].Who) != 2 ||
+		rd.Pools[0].ProviderID != "openai" || !rd.Pools[0].Sink {
+		t.Errorf("pools: %+v", rd.Pools)
+	}
+}
+
+func TestRemoteRoutingWritesGoToTheInstance(t *testing.T) {
+	srv := fakeMagpie(t)
+	withRemote(t, srv.URL)
+	if c := remoteGateway(); c == nil {
+		t.Fatal("the instance answered its probe, yet remote stayed off")
+	}
+	groupsAction = ""
+	if err := routingFound(true); err != nil {
+		t.Fatalf("found: %v", err)
+	}
+	if groupsAction != "/api/groups/found" {
+		t.Errorf("found asked %q", groupsAction)
+	}
+	groupsAction = ""
+	if err := routingSwitch("fast", false); err != nil {
+		t.Fatalf("switch: %v", err)
+	}
+	if groupsAction != "/api/groups/switch" {
+		t.Errorf("switch asked %q", groupsAction)
+	}
+	groupsAction = ""
+	if err := routingDelete("fast"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if groupsAction != "/api/groups/delete" {
+		t.Errorf("delete asked %q", groupsAction)
+	}
+	groupsAction = ""
+	if err := routingSaveGroup(provider.Group{ID: "quick2", Name: "Quick 2"}, "quick"); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if groupsAction != "/api/groups/save" {
+		t.Errorf("save asked %q", groupsAction)
+	}
+}
+
+// groupsAction records the path of the last group action the fake was
+// asked, "" when none — the tests read it to prove a write went remote.
+var groupsAction string
+
 func fakeMagpie(t *testing.T) *httptest.Server {
 	mux := http.NewServeMux()
 	guard := func(rw http.ResponseWriter, r *http.Request, path string) bool {
@@ -145,6 +239,31 @@ func fakeMagpie(t *testing.T) *httptest.Server {
 			`{"id":"claude","name":"Claude","preset":"claude","account":{"agent":"claude","user":"w@example.com","plan":"pro"},"ready":true,"agents":[{"id":"codex","name":"Codex","icon":"codex-color","current":true,"model":"claude/sonnet"}]},` +
 			`{"id":"deepseek","name":"DeepSeek","key":{"set":false,"masked":"","optional":false},"ready":false,"off":true,"agents":[],"models":[{},{},{},{}]}` +
 			`],"presets":[],"excluded":[],"gateway":{"url":"http://127.0.0.1:3497","running":true,"mine":false,"version":"v9.9.9","models":3,"calls":[{"time":"2026-10-22T08:00:00Z","agent":"claude","model":"openai/gpt-5","provider":"openai","from":"anthropic","to":"openai","status":200,"ms":120,"ttft":40}]}}`))
+	})
+	mux.HandleFunc("GET /api/groups", func(rw http.ResponseWriter, r *http.Request) {
+		if !guard(rw, r, "groups") {
+			return
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		rw.Write([]byte(`{"groups":[` +
+			`{"id":"fast","name":"Fast","routing":"manual","ready":true,"picked":"openai/gpt-5:high","weights":{"openai/gpt-5:high":3},` +
+			`"memberInfo":[` +
+			`{"id":"openai/gpt-5:high","of":"openai/gpt-5","effort":"high","ready":true,"provider":"openai","name":"OpenAI","icon":"openai-color","model":"gpt-5","on":2,"canFast":true,"context":128000,"efforts":["low","high"]},` +
+			`{"id":"group/quick","group":true,"ready":true,"name":"Quick","icon":"claude-color","on":1}]},` +
+			`{"id":"quick","name":"Quick","routing":"ordered","ready":false,"disabled":true,` +
+			`"memberInfo":[{"id":"deepseek/r2","of":"deepseek/r2","ready":false}]}],` +
+			`"models":[{"id":"openai/gpt-5","name":"GPT-5","provider":"openai","providerName":"OpenAI","icon":"openai-color","context":128000,"efforts":["low","high"],"canFast":true,"images":true}],` +
+			`"pools":[{"provider":"openai","name":"OpenAI","icon":"openai-color","kind":"account","who":["a@x.com","b@x.com"],"routing":"rotate","affinity":"session","sink":true}],` +
+			`"deciders":[{"id":"jev/sonnet","name":"Jev","provider":"jev","providerName":"Jev","icon":"jev-color"}],` +
+			`"found":true}`))
+	})
+	mux.HandleFunc("POST /api/groups/{action}", func(rw http.ResponseWriter, r *http.Request) {
+		if !guard(rw, r, "groups action") {
+			return
+		}
+		groupsAction = r.URL.Path
+		rw.Header().Set("Content-Type", "application/json")
+		rw.Write([]byte(`{"groups":[],"models":[],"pools":[],"deciders":[],"found":true}`))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

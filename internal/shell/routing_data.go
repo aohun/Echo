@@ -143,9 +143,38 @@ type RoutingTryRow struct {
 }
 
 func readRoutingData() RoutingData {
+	// The experiment's seam (docs/08 M4): the page's groups from a magpie
+	// web instance when the environment points at one; embedded otherwise.
+	if c := remoteGateway(); c != nil {
+		if rd, ok := readRoutingRemote(c); ok {
+			return rd
+		}
+		// The instance went away; fall through to the embedded read.
+	}
+	return readRoutingEmbedded()
+}
+
+// routingTemplates lists the quick-setup templates, the same either way —
+// built-ins, not user state.
+func routingTemplates() []RoutingTemplateRow {
+	var out []RoutingTemplateRow
+	for _, t := range provider.Templates() {
+		name := provider.TemplateNames[t.Kind]
+		if name == "" {
+			name = t.Kind
+		}
+		out = append(out, RoutingTemplateRow{
+			Kind: t.Kind,
+			Name: name,
+			Why:  t.Why,
+		})
+	}
+	return out
+}
+
+func readRoutingEmbedded() RoutingData {
 	allGroups := provider.Groups()
 	autoOn := provider.AutoGroupsOn()
-	templates := provider.Templates()
 	served := provider.Served()
 	find := provider.GroupFinder()
 
@@ -154,17 +183,7 @@ func readRoutingData() RoutingData {
 	}
 
 	// 1. Templates
-	for _, t := range templates {
-		name := provider.TemplateNames[t.Kind]
-		if name == "" {
-			name = t.Kind
-		}
-		rd.Templates = append(rd.Templates, RoutingTemplateRow{
-			Kind: t.Kind,
-			Name: name,
-			Why:  t.Why,
-		})
-	}
+	rd.Templates = routingTemplates()
 
 	// 2. Available models (excluding groups)
 	for _, e := range served {
