@@ -32,7 +32,7 @@ ifeq ($(shell go env GOOS),android)
   TAGS = nogui
 endif
 
-.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux clean dev dev-once echo probe
+.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux clean dev dev-once echo echo-app echo-app-bundled probe
 
 build:
 	go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o magpie .
@@ -59,6 +59,25 @@ echo:
 # is what makes the check find it.
 echo-app:
 	GOFLAGS="-tags=nogui,echo" MYGO_UPDATER_PRIVATE_KEY="$$(cat "$$HOME/Library/Application Support/mygo/update-keys/mygo-update.key")" go tool mygo build $(if $(UPLOAD),-upload)
+
+# echo-app-bundled is echo-app with the magpie web helper inside the bundle,
+# so the package the user installs needs nothing else: the shell starts and
+# reuses its own instance at launch (internal/shell/companion.go). The
+# helper is built from the pinned magpie checkout the contract speaks
+# (docs/08), the same build the contract test makes, and the DMG is
+# assembled by hand afterwards — mygo's own DMG was made without the helper.
+ECHO_MAGPIE_CHECKOUT ?= /Users/wayne/Desktop/git/magpie
+echo-app-bundled: echo-app
+	# -C moves the whole build, output path included: aim it absolutely
+	CGO_ENABLED=1 go build -C $(ECHO_MAGPIE_CHECKOUT) -o $(CURDIR)/build-echo/darwin-arm64/Echo.app/Contents/MacOS/echo-magpie-web .
+	codesign --force --deep --sign - build-echo/darwin-arm64/Echo.app
+	rm -rf build-echo/dmg && mkdir -p build-echo/dmg
+	cp -R build-echo/darwin-arm64/Echo.app build-echo/dmg/
+	ln -s /Applications build-echo/dmg/Applications
+	rm -f "build-echo/darwin-arm64/Echo-$(VERSION)-arm64.dmg"
+	# macOS 27 took hdiutil create's folder path away: diskutil does it now.
+	diskutil image create from build-echo/dmg "build-echo/darwin-arm64/Echo-$(VERSION)-arm64.dmg" --volumeName Echo --format udzo
+	@echo "  dmg: build-echo/darwin-arm64/Echo-$(VERSION)-arm64.dmg"
 
 # probe is the shell's acceptance check. It renders every page of the shell
 # without a display and reports what each showed, so it needs no desktop

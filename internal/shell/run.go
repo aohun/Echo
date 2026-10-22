@@ -65,6 +65,12 @@ func Run(opts Options) error {
 	// app starts in it (mygo.Theme.SetSource)
 	applyThemeSource(settings.Load().Theme)
 
+	// The bundled magpie web is started before anything reads: the seam
+	// decides once (remoteGateway's sync.Once), so the instance must be
+	// answering by then (companion.go). A run the environment points
+	// itself, and one without the helper next to the binary, start none.
+	stopCompanion := startCompanion()
+
 	// The gateway starts before the window, as magpie's own app starts it:
 	// it is the product's reason to exist, and an agent may be waiting on
 	// the address. It is also what makes the app a menu bar app rather than
@@ -141,7 +147,7 @@ func Run(opts Options) error {
 	if !opts.NoBackend {
 		stop = gui.StopBackend
 	}
-	wireQuit(mygo.App, a, stop)
+	wireQuit(mygo.App, a, stop, stopCompanion)
 
 	return mygo.App.Run()
 }
@@ -160,13 +166,21 @@ type quitHooks interface {
 // any window — because the window's close handler (onWindowClose) hides the
 // window unless it has run, and a prevented close cancels the whole quit.
 // OnWillQuit fires only after every window has closed, so a flag set there
-// arrives too late to let the quit's own close through. stopBackend, which
-// must run after the windows are gone, goes there instead.
-func wireQuit(app quitHooks, a *App, stopBackend func()) {
+// arrives too late to let the quit's own close through. stopBackend and
+// stopCompanion, which must run after the windows are gone, go there
+// instead.
+func wireQuit(app quitHooks, a *App, stopBackend, stopCompanion func()) {
 	app.OnBeforeQuit(func(_ *mygo.QuitEvent) { a.beginQuit() })
-	if stopBackend != nil {
-		app.OnWillQuit(func(_ *mygo.QuitEvent) { stopBackend() })
-	}
+	app.OnWillQuit(func(_ *mygo.QuitEvent) {
+		if stopBackend != nil {
+			stopBackend()
+		}
+		// the bundled magpie web dies with the app that started it; one
+		// reused from an earlier launch is left to its owner
+		if stopCompanion != nil {
+			stopCompanion()
+		}
+	})
 }
 
 // beginQuit marks the app as ending, which is what lets the window's close

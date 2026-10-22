@@ -296,7 +296,7 @@ func TestQuitWiringSurvivesMyGosSequence(t *testing.T) {
 	app := NewForTest()
 	hooks := &fakeQuitHooks{}
 	stopped := false
-	wireQuit(hooks, app, func() { stopped = true })
+	wireQuit(hooks, app, func() { stopped = true }, nil)
 
 	if len(hooks.before) != 1 {
 		t.Fatalf("OnBeforeQuit got %d listeners, want 1: the flag would never be set before the windows close", len(hooks.before))
