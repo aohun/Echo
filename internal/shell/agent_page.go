@@ -220,57 +220,38 @@ func (a *App) loadCLIsAsync() {
 
 // readAgentPageData reads all detected agents, uninstalled installs, and schemes.
 func readAgentPageData() ([]AgentRow, []AgentInstallRow, []ProfileRow) {
+	// The experiment's seam (docs/08 M4): the rows, the install list and
+	// the schemes from a magpie web instance when the environment points
+	// at one; embedded otherwise.
+	if c := remoteGateway(); c != nil {
+		if rows, installs, profiles, ok := readAgentsRemote(c); ok {
+			// The state names only the agents it found; the roster of the
+			// known ones is Echo's own, the same either way.
+			return notFoundAgentRows(rows), installs, profiles
+		}
+		// The instance went away; fall through to the embedded read.
+	}
+	return readAgentsEmbedded()
+}
+
+// readAgentsEmbedded is the page's read from the domain packages this
+// process carries.
+func readAgentsEmbedded() ([]AgentRow, []AgentInstallRow, []ProfileRow) {
 	detected := agent.Detected()
 	s := settings.Load()
 	detected, _ = settings.Arrange(s, detected, func(a *agent.Agent) string { return a.ID })
 	all := agent.All()
 
-	foundMap := make(map[string]*agent.Agent, len(detected))
-	for _, a := range detected {
-		foundMap[a.ID] = a
-	}
-
 	rows := make([]AgentRow, 0, len(all))
 	for _, a := range detected {
 		rows = append(rows, readOneAgentRow(a))
 	}
-	for _, a := range all {
-		if _, ok := foundMap[a.ID]; !ok {
-			rows = append(rows, AgentRow{
-				ID:    a.ID,
-				Name:  a.Name,
-				Icon:  a.Icon,
-				Found: false,
-				Path:  a.Path,
-			})
-		}
-	}
+	rows = notFoundAgentRows(rows)
 
 	installs := agent.Installs()
 	installRows := make([]AgentInstallRow, 0, len(installs))
 	for _, inst := range installs {
-		via := "Terminal"
-		cmd := ""
-		if len(inst.Commands) > 0 {
-			cmd = inst.Commands[0].Command
-			switch inst.Commands[0].Via {
-			case "npm":
-				via = "Node.js + npm"
-			case "brew":
-				via = "Homebrew"
-			case "powershell":
-				via = "PowerShell"
-			case "script":
-				via = "Script"
-			}
-		}
-		installRows = append(installRows, AgentInstallRow{
-			ID:      inst.ID,
-			Name:    inst.Name,
-			Icon:    inst.Icon,
-			Via:     via,
-			Command: cmd,
-		})
+		installRows = append(installRows, agentInstallRowOf(inst))
 	}
 
 	profileRows := make([]ProfileRow, 0)
@@ -290,6 +271,56 @@ func readAgentPageData() ([]AgentRow, []AgentInstallRow, []ProfileRow) {
 	}
 
 	return rows, installRows, profileRows
+}
+
+// notFoundAgentRows appends the rows for the agents the roster knows and
+// the found rows don't name: uninstalled, they show under the card with
+// their install commands. The roster is Echo's own, the same either way
+// the page reads.
+func notFoundAgentRows(rows []AgentRow) []AgentRow {
+	found := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		found[r.ID] = true
+	}
+	for _, a := range agent.All() {
+		if !found[a.ID] {
+			rows = append(rows, AgentRow{
+				ID:    a.ID,
+				Name:  a.Name,
+				Icon:  a.Icon,
+				Found: false,
+				Path:  a.Path,
+			})
+		}
+	}
+	return rows
+}
+
+// agentInstallRowOf is an uninstalled agent's row, its install command
+// named by what runs it.
+func agentInstallRowOf(inst agent.Install) AgentInstallRow {
+	via := "Terminal"
+	cmd := ""
+	if len(inst.Commands) > 0 {
+		cmd = inst.Commands[0].Command
+		switch inst.Commands[0].Via {
+		case "npm":
+			via = "Node.js + npm"
+		case "brew":
+			via = "Homebrew"
+		case "powershell":
+			via = "PowerShell"
+		case "script":
+			via = "Script"
+		}
+	}
+	return AgentInstallRow{
+		ID:      inst.ID,
+		Name:    inst.Name,
+		Icon:    inst.Icon,
+		Via:     via,
+		Command: cmd,
+	}
 }
 
 func readOneAgentRow(a *agent.Agent) AgentRow {
@@ -588,7 +619,7 @@ func (a *App) agentsLead(c *ui.Context, t *ui.Theme) {
 		}
 		if refreshBtn.Clicked() {
 			go func() {
-				agent.Rescan()
+				agentRescan()
 				a.Reload()
 			}()
 		}
@@ -755,8 +786,7 @@ func (a *App) agentRow(c *ui.Context, t *ui.Theme, ag AgentRow, index, total int
 					if reapplyBtn.Clicked() {
 						agID := ag.ID
 						go func() {
-							if agObj, err := agent.Find(agID); err == nil {
-								_ = agObj.Reapply()
+							if err := agentReapply(agID); err == nil {
 								a.Reload()
 							}
 						}()
@@ -831,12 +861,7 @@ func (a *App) agentRow(c *ui.Context, t *ui.Theme, ag AgentRow, index, total int
 			if sw := ui.Switch(c, &on).Shrink(0); sw.Clicked() {
 				agID := ag.ID
 				go func(targetOn bool) {
-					if agObj, err := agent.Find(agID); err == nil {
-						if targetOn {
-							_, _ = agObj.ConnectHow()
-						} else {
-							_ = agObj.Disconnect()
-						}
+					if err := agentConnect(agID, targetOn); err == nil {
 						a.Reload()
 					}
 				}(on)
@@ -1016,11 +1041,8 @@ func (a *App) agentModalContent(c *ui.Context, t *ui.Theme, ag AgentRow) {
 							}
 							if item.Chosen() {
 								go func() {
-									if agObj != nil {
-										if f := agObj.Field(tr.key); f != nil {
-											_ = f.Set(opt.ID)
-											a.Reload()
-										}
+									if err := agentSet(ag.ID, tr.key, opt.ID); err == nil {
+										a.Reload()
 									}
 								}()
 							}
