@@ -25,6 +25,10 @@ func authFile(t *testing.T) map[string]map[string]any {
 // has spent the old refresh token, so a host killed 2 seconds in left
 // the account signed out.
 func TestStopLetsARenewalEnd(t *testing.T) {
+	// skipped while the auth refresh is commented out in host.js's
+	// fresh() — the user's ask, a temporary one; restore this skip's
+	// removal together with the function's body
+	t.Skip("the auth refresh is commented out for now; see host.js fresh()")
 	sandbox(t)
 	t.Setenv("FAKE_BASE", "http://127.0.0.1:1/v1")
 	logf := filepath.Join(t.TempDir(), "renewals")

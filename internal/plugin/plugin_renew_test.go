@@ -21,6 +21,10 @@ import (
 // not tried again, and one that can't be renewed goes with the old token
 // and isn't tried again at once.
 func TestPluginRenewsSignIns(t *testing.T) {
+	// skipped while the auth refresh is commented out in host.js's
+	// fresh() — the user's ask, a temporary one; restore this skip's
+	// removal together with the function's body
+	t.Skip("the auth refresh is commented out for now; see host.js fresh()")
 	sandbox(t)
 	var mu sync.Mutex
 	var seen []string

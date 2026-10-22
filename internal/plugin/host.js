@@ -2058,6 +2058,13 @@ function renewAt(a, stored) {
 // RENEW_WAIT for it: a renewal that takes longer goes on, and is kept when
 // it ends, but what waits for it goes on with the sign-in as it is.
 async function fresh(provider, key) {
+  // The auth refresh is commented out for now, at the user's ask: the
+  // community plugins' refreshes hang on this machine's network — a
+  // provider's proxy that answers nothing (127.0.0.1:1082 refused), a
+  // Bun lookup on GitHub that times out — and every read that reaches
+  // the host waited on them, the reload with them. Restore it (drop the
+  // return below) once the network situation is settled.
+  return
   const a = auths().get(provider)?.auth
   const stored = readAuth()[key]
   const at = renewAt(a, stored)
