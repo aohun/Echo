@@ -11,6 +11,7 @@ import (
 	"github.com/egoist/mygo/plugins/updater/native"
 	"github.com/egoist/mygo/ui"
 	"github.com/yetone/magpie/internal/gui"
+	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -115,6 +116,7 @@ func Run(opts Options) error {
 	if !opts.NoBackend {
 		go func() {
 			<-companionReady
+			proc.UserPathWait() // the gateway's agents need the PATH a terminal has
 			if remoteGateway() == nil {
 				gui.StartBackend()
 			}
@@ -176,6 +178,8 @@ func Run(opts Options) error {
 		go func() {
 			<-companionReady
 			step("companion decided")
+			proc.UserPathWait() // the reads detect the agents with the PATH a terminal has
+			step("login shell answered")
 			a.win.Update(func() {
 				a.Reload()
 			})

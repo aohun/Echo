@@ -17,6 +17,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/yetone/magpie/internal/magpieclient"
+	"github.com/yetone/magpie/internal/proc"
 )
 
 // The bundled magpie web. The installed app carries its own instance (make
@@ -133,6 +134,12 @@ func companionStart() *exec.Cmd {
 	if companionHealthy(addr, st.Key) {
 		log.Printf("echo: companion: reusing the instance on %s", addr)
 	} else {
+		// the spawned instance inherits this process's environment, its
+		// gateway runs agents with it: the login shell's PATH and
+		// variables have to be in before the helper starts (proc.UserPath
+		// used to wait for the answer before the window; the wait moved
+		// here, where the env is first handed on)
+		proc.UserPathWait()
 		web, gw := companionPort(cmp.Or(st.Web, companionWebPort)), companionPort(cmp.Or(st.Gw, companionGwPort))
 		cmd, err = companionSpawn(helper, web, gw, st.Key, filepath.Join(dir, companionHelper+".log"))
 		if err != nil {
@@ -194,7 +201,7 @@ func companionSpawn(helper, webPort, gwPort, key, logPath string) (*exec.Cmd, er
 	if err != nil {
 		f = nil // the log is a courtesy; run without it
 	}
-	cmd := exec.Command(helper, "web", "--no-open", "--addr", "127.0.0.1:"+webPort)
+	cmd := proc.Command(helper, "web", "--no-open", "--addr", "127.0.0.1:"+webPort)
 	cmd.Env = append(os.Environ(),
 		"MAGPIE_WEB_KEY="+key,
 		"MAGPIE_WEB_RUNKEY="+key,

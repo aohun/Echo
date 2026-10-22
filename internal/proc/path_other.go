@@ -35,13 +35,50 @@ import (
 // magpie itself reads them through appdir.LookupEnv, which passes such a
 // value over, as it does the ones magpie started with. Those are read
 // as magpie starts (the library is synced into the agents at once), so the
-// answer is waited for, but no more than shellWait: a slow profile mustn't
-// hold the window up, and what it says later is still taken.
+// answer is waited for — no more than shellWait, a slow profile mustn't
+// hold the window up, and what it says later is still taken. The ask and
+// the wait are separate (UserPathQuick, UserPathWait) for a shell that
+// wants its window before the answer: the ask is made at once, the wait
+// taken where the answer is first needed.
 func UserPath() {
+	UserPathQuick()
+	UserPathWait()
+}
+
+// the ask UserPathQuick made, and the moment its wait runs out
+type userPathAsk struct {
+	done     chan struct{}
+	deadline time.Time
+}
+
+// userPathMu guards userPathCur, the ask a UserPathWait waits for
+var (
+	userPathMu  sync.Mutex
+	userPathCur *userPathAsk
+)
+
+// UserPathQuick adds the folders the user's command-line tools are
+// installed in at once, and asks the login shell for its PATH and
+// variables in the background: a shell that wants its window first calls
+// this, and waits for the answer with UserPathWait where it is first
+// needed. One ask runs at a time; a call after one came back asks again.
+func UserPathQuick() {
+	userPathMu.Lock()
+	if cur := userPathCur; cur != nil {
+		select {
+		case <-cur.done:
+			userPathCur = nil // the last ask came back; ask again
+		default:
+			userPathMu.Unlock()
+			return // one is running; it is the one a wait would take
+		}
+	}
+	ask := &userPathAsk{done: make(chan struct{}), deadline: time.Now().Add(shellWait)}
+	userPathCur = ask
+	userPathMu.Unlock()
 	addPath(userDirs(false))
-	done := make(chan struct{})
 	go func() {
-		defer close(done)
+		defer close(ask.done)
 		p, vars := shellEnv()
 		agents := make(map[string]string, len(agentenv.Vars))
 		for _, v := range agentenv.Vars {
@@ -55,9 +92,25 @@ func UserPath() {
 			login.Unlock()
 		}
 	}()
+}
+
+// UserPathWait waits for the answer UserPathQuick asked for, until the
+// deadline the ask set (shellWait from its start), then goes on with what
+// has arrived: a wait after the answer came returns at once, and the ask
+// is made here if it wasn't yet.
+func UserPathWait() {
+	UserPathQuick()
+	userPathMu.Lock()
+	ask := userPathCur
+	userPathMu.Unlock()
+	if ask == nil {
+		return
+	}
+	timer := time.NewTimer(time.Until(ask.deadline))
+	defer timer.Stop()
 	select {
-	case <-done:
-	case <-time.After(shellWait):
+	case <-ask.done:
+	case <-timer.C:
 	}
 }
 

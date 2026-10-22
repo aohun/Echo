@@ -10,9 +10,11 @@ import (
 const hasGUI = true
 
 // the desktop app may have been opened from the Finder, with none of the
-// PATH a terminal has
+// PATH a terminal has. The ask is made here, the answer waited for where
+// it is first needed (the shell's first read): the window doesn't wait
+// for a slow profile.
 func runGUI(showMain bool, link string) error {
-	proc.UserPath()
+	proc.UserPathQuick()
 	gui.Started = ownSignals // once Wails handles them: it quits through OnShutdown
 	return gui.Run(version, showMain, link)
 }
